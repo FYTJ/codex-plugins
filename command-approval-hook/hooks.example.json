@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 /Users/YOU/.codex/hooks/block_blacklisted_commands.py",
+            "statusMessage": "Checking command blacklist"
+          }
+        ]
+      }
+    ]
+  }
+}

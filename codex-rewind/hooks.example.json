@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOU/.codex/bin/codex-rewind hook-user-prompt",
+            "statusMessage": "Checking rewind command",
+            "timeout": 3600
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|apply_patch|ApplyPatch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/YOU/.codex/bin/codex-rewind hook-pre-tool",
+            "statusMessage": "Capturing rewind preimage"
+          }
+        ]
+      }
+    ]
+  }
+}

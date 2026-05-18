@@ -1,0 +1,4 @@
+# 每行一条 Bash 拦截规则。可以写 Claude Code 风格，也可以只写短语。
+Bash(git reset --hard*)
+Bash(rm -rf*)
+pkill -f

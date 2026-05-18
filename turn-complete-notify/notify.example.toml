@@ -1,0 +1,3 @@
+enabled = true
+mac_notify_enabled = true
+dedupe_window_sec = 10

@@ -1,0 +1,32 @@
+{
+  "name": "codex-rewind",
+  "version": "0.4.0",
+  "description": "App/CLI intercepted AppKit rewind picker and local file checkpoints for Codex sessions",
+  "author": {
+    "name": "zhuyanbo"
+  },
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "rewind",
+    "checkpoint"
+  ],
+  "interface": {
+    "displayName": "Codex Rewind",
+    "shortDescription": "Intercept /rewind and open a native local rewind picker",
+    "longDescription": "Intercepts the literal /rewind prompt in Codex App before turn/start, with a CLI UserPromptSubmit hook fallback. It opens a native AppKit picker to choose a historical user turn and applies session/code rewind modes through Codex checkpoints and live thread/rollback when available. Falls back to Tk only when the AppKit helper cannot be built.",
+    "developerName": "zhuyanbo",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Open the rewind picker",
+      "Choose a historical user turn",
+      "Rewind session, workspace files, or both"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}
