@@ -23,6 +23,7 @@ RULES_FILE = (
     if os.environ.get("CODEX_BLACKLIST_RULES_FILE")
     else None
 )
+APPROVAL_TIMEOUT_SEC = 86_340
 
 
 def shell_words(text: str) -> list[str]:
@@ -235,10 +236,6 @@ def find_blacklisted_phrases(command: str) -> list[tuple[str, ...]]:
     return phrases
 
 
-def apple_quote(text: str) -> str:
-    return json.dumps(text)
-
-
 def prompt_user_macos_alert(payload: dict, phrases: list[tuple[str, ...]], command: str) -> bool:
     range_spec = highlight_range_specs(command, phrases)
     with tempfile.NamedTemporaryFile(
@@ -272,8 +269,8 @@ on run argv
     set alert to current application's NSAlert's alloc()'s init()
     alert's setMessageText:("Project: " & projectText)
     alert's setInformativeText:("Blacklisted command phrases detected." & return & return & "Phrases:" & return & phraseText & return & return & "Command:")
-    alert's addButtonWithTitle:"Allow"
     alert's addButtonWithTitle:"Deny"
+    alert's addButtonWithTitle:"Allow"
 
     set scrollView to current application's NSScrollView's alloc()'s initWithFrame:{{0, 0}, {760, 360}}
     scrollView's setHasVerticalScroller:true
@@ -325,7 +322,7 @@ on run argv
 
     delay 0.1
     set response to alert's runModal()
-    if (response as integer) is 1000 then
+    if (response as integer) is 1001 then
         return "Allow"
     else
         return "Deny"
@@ -346,6 +343,7 @@ end run
             ],
             capture_output=True,
             text=True,
+            timeout=APPROVAL_TIMEOUT_SEC,
             check=False,
         )
     finally:
@@ -359,73 +357,14 @@ end run
     return result.stdout.strip() == "Allow"
 
 
-def prompt_user_osascript(
-    payload: dict,
-    phrases: list[tuple[str, ...]],
-    command: str,
-    fallback_reason: Exception,
-) -> bool:
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        prefix="codex-command-",
-        suffix=".txt",
-        delete=False,
-    ) as command_file:
-        command_file.write(command)
-        command_path = command_file.name
-
-    subprocess.run(
-        ["/usr/bin/open", "-a", "TextEdit", command_path],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-
-    preview = command if len(command) <= 700 else f"{command[:697]}..."
-    message = (
-        f"Project: {project_label(payload)}\n\n"
-        "Blacklisted command phrases detected.\n\n"
-        f"Phrases:\n{phrases_text(phrases)}\n\n"
-        "The scrollable approval window could not be opened:\n"
-        f"{fallback_reason}\n\n"
-        "The full command was opened in TextEdit and written to:\n"
-        f"{command_path}\n\n"
-        f"Command:\n{preview}\n\n"
-        "Allow this command?"
-    )
-    script = [
-        "-e",
-        (
-            f"display dialog {apple_quote(message)} "
-            'with title "Codex Command Approval" '
-            'buttons {"Deny", "Allow"} '
-            'default button "Allow" '
-            'with icon caution'
-        ),
-    ]
-    result = subprocess.run(
-        ["/usr/bin/osascript", *script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return "button returned:Allow" in result.stdout
-
-
 def prompt_user(payload: dict, phrases: list[tuple[str, ...]], command: str) -> bool:
     override = os.environ.get("CODEX_BLACKLIST_HOOK_DECISION", "").strip().lower()
-    if override in {"allow", "approve", "yes"}:
-        return True
     if override in {"deny", "block", "no"}:
         return False
 
     notify_approval_requested(payload)
 
-    try:
-        return prompt_user_macos_alert(payload, phrases, command)
-    except Exception as exc:
-        return prompt_user_osascript(payload, phrases, command, exc)
+    return prompt_user_macos_alert(payload, phrases, command)
 
 
 def emit_deny(reason: str) -> int:
