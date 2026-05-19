@@ -269,8 +269,8 @@ on run argv
     set alert to current application's NSAlert's alloc()'s init()
     alert's setMessageText:("Project: " & projectText)
     alert's setInformativeText:("Blacklisted command phrases detected." & return & return & "Phrases:" & return & phraseText & return & return & "Command:")
-    alert's addButtonWithTitle:"Deny"
     alert's addButtonWithTitle:"Allow"
+    alert's addButtonWithTitle:"Deny"
 
     set scrollView to current application's NSScrollView's alloc()'s initWithFrame:{{0, 0}, {760, 360}}
     scrollView's setHasVerticalScroller:true
@@ -322,7 +322,7 @@ on run argv
 
     delay 0.1
     set response to alert's runModal()
-    if (response as integer) is 1001 then
+    if (response as integer) is 1000 then
         return "Allow"
     else
         return "Deny"
