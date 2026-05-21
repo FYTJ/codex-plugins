@@ -26,6 +26,9 @@ DEFAULT_HOME = Path.home() / ".codex" / "rewind"
 MAX_BASELINE_UNTRACKED_BYTES = int(
     os.environ.get("CODEX_REWIND_MAX_BASELINE_UNTRACKED_BYTES", "1048576")
 )
+MAX_WORKSPACE_SNAPSHOT_ENTRIES = int(
+    os.environ.get("CODEX_REWIND_MAX_WORKSPACE_SNAPSHOT_ENTRIES", "100000")
+)
 SESSION_ROLLBACK_METHOD = "thread/rollback"
 
 
@@ -300,6 +303,28 @@ def is_inside(path: Path, root: Path) -> bool:
         return False
 
 
+def is_ancestor_of(path: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(path.resolve())
+        return path.resolve() != child.resolve()
+    except ValueError:
+        return False
+
+
+def workspace_rel(path: Path, root: Path) -> str:
+    path_abs = Path(os.path.abspath(path))
+    root_abs = Path(os.path.abspath(root))
+    return path_abs.relative_to(root_abs).as_posix()
+
+
+def is_workspace_path_inside(path: Path, root: Path) -> bool:
+    try:
+        workspace_rel(path, root)
+        return True
+    except ValueError:
+        return False
+
+
 def copy_file_backup(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
@@ -376,10 +401,90 @@ def write_checkpoint_bytes(cwd: Path, checkpoint: dict[str, Any], rel: str, data
     return rel
 
 
+def workspace_excluded_roots(cwd: Path) -> list[Path]:
+    root = cwd.resolve()
+    candidates = [storage_home().resolve()]
+    return [path for path in candidates if is_inside(path, root)]
+
+
+def is_workspace_excluded(path: Path, excluded_roots: list[Path]) -> bool:
+    return any(is_inside(path, excluded) for excluded in excluded_roots)
+
+
+def is_workspace_excluded_ancestor(path: Path, excluded_roots: list[Path]) -> bool:
+    return any(is_ancestor_of(path, excluded) for excluded in excluded_roots)
+
+
+def workspace_inventory(
+    root: Path,
+    *,
+    excluded_roots: list[Path],
+    max_entries: int = MAX_WORKSPACE_SNAPSHOT_ENTRIES,
+) -> dict[str, Any]:
+    files: set[str] = set()
+    dirs: set[str] = set()
+    skipped: list[str] = []
+    stack = [root.resolve()]
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if is_workspace_excluded(path, excluded_roots):
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if not is_workspace_excluded_ancestor(path, excluded_roots):
+                                dirs.add(workspace_rel(path, root))
+                            stack.append(path)
+                        else:
+                            files.add(workspace_rel(path, root))
+                    except OSError:
+                        skipped.append(safe_rel(path, root))
+                    if len(files) + len(dirs) > max_entries:
+                        return {
+                            "complete": False,
+                            "files": sorted(files),
+                            "dirs": sorted(dirs),
+                            "skipped": skipped,
+                            "truncated_at": max_entries,
+                        }
+        except OSError:
+            skipped.append(safe_rel(current, root))
+
+    return {
+        "complete": True,
+        "files": sorted(files),
+        "dirs": sorted(dirs),
+        "skipped": skipped,
+    }
+
+
+def capture_workspace_baseline(cwd: Path, checkpoint: dict[str, Any]) -> None:
+    root = cwd.resolve()
+    excluded_roots = workspace_excluded_roots(root)
+    inventory = workspace_inventory(root, excluded_roots=excluded_roots)
+    checkpoint["workspace"] = {
+        "snapshot_version": 1,
+        "root": str(root),
+        "baseline_files": inventory["files"],
+        "baseline_dirs": inventory["dirs"],
+        "baseline_complete": bool(inventory["complete"]),
+        "baseline_skipped": inventory.get("skipped") or [],
+        "excluded_roots": [str(path) for path in excluded_roots],
+        "max_entries": MAX_WORKSPACE_SNAPSHOT_ENTRIES,
+    }
+    if not inventory["complete"]:
+        checkpoint["workspace"]["baseline_truncated_at"] = inventory.get("truncated_at")
+
+
 def capture_git_baseline(cwd: Path, checkpoint: dict[str, Any]) -> None:
     root = git_root(cwd)
     if root is None:
         checkpoint["git"] = None
+        capture_workspace_baseline(cwd, checkpoint)
         return
 
     has_head = git_has_head(root)
@@ -1110,6 +1215,7 @@ def file_actions(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> lis
     for meta in (checkpoint.get("file_backups") or {}).values():
         if isinstance(meta, dict):
             actions.append(restore_backup(cwd, checkpoint, meta, dry_run=dry_run))
+    actions.extend(restore_workspace_baseline(cwd, checkpoint, dry_run=dry_run))
     return actions
 
 
@@ -2224,6 +2330,82 @@ def remove_workspace_path(path: Path, root: Path) -> None:
         remove_empty_parents(path.parent, root)
     except FileNotFoundError:
         pass
+
+
+def remove_empty_new_workspace_parents(path: Path, root: Path, baseline_dirs: set[str]) -> None:
+    try:
+        path = Path(os.path.abspath(path))
+        root = Path(os.path.abspath(root))
+    except OSError:
+        return
+    while path != root and is_workspace_path_inside(path, root):
+        try:
+            rel = workspace_rel(path, root)
+        except ValueError:
+            return
+        if rel in baseline_dirs:
+            return
+        try:
+            path.rmdir()
+        except OSError:
+            return
+        path = path.parent
+
+
+def remove_new_workspace_path(path: Path, root: Path, baseline_dirs: set[str]) -> None:
+    if not is_workspace_path_inside(path, root):
+        return
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        remove_empty_new_workspace_parents(path.parent, root, baseline_dirs)
+    except FileNotFoundError:
+        pass
+
+
+def restore_workspace_baseline(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> list[str]:
+    workspace = checkpoint.get("workspace")
+    if not isinstance(workspace, dict):
+        return []
+    if not workspace.get("baseline_complete", True):
+        return [f"warn-workspace-baseline-incomplete {workspace.get('root') or cwd}"]
+
+    root = Path(str(workspace.get("root") or cwd)).expanduser().resolve()
+    if not root.exists():
+        return [f"skip missing workspace root {root}"]
+
+    excluded_roots = [
+        Path(str(item)).expanduser().resolve()
+        for item in (workspace.get("excluded_roots") or [])
+        if isinstance(item, str) and item
+    ]
+    current = workspace_inventory(root, excluded_roots=excluded_roots)
+    if not current.get("complete", True):
+        return [f"warn-workspace-current-incomplete {root}"]
+
+    baseline_files = set(workspace.get("baseline_files") or [])
+    baseline_dirs = set(workspace.get("baseline_dirs") or [])
+    current_files = set(current.get("files") or [])
+    current_dirs = set(current.get("dirs") or [])
+
+    actions: list[str] = []
+    for rel in sorted(current_files - baseline_files, key=lambda item: (item.count("/"), item), reverse=True):
+        path = root / rel
+        actions.append(f"delete-new-workspace {path}")
+        if not dry_run:
+            remove_new_workspace_path(path, root, baseline_dirs)
+
+    for rel in sorted(current_dirs - baseline_dirs, key=lambda item: (item.count("/"), item), reverse=True):
+        path = root / rel
+        if not path.exists():
+            continue
+        actions.append(f"delete-new-workspace-dir {path}")
+        if not dry_run:
+            remove_new_workspace_path(path, root, baseline_dirs)
+
+    return actions
 
 
 def delete_new_ignored(root: Path, baseline_ignored: set[str], *, dry_run: bool) -> list[str]:
