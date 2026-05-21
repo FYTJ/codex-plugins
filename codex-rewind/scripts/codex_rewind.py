@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -113,27 +115,88 @@ def manifest_path(cwd: Path) -> Path:
     return project_dir(cwd) / "manifest.json"
 
 
-def load_manifest(cwd: Path) -> dict[str, Any]:
-    path = manifest_path(cwd)
-    if not path.exists():
-        return {
-            "version": VERSION,
-            "cwd": str(cwd),
-            "created_at": now_iso(),
-            "checkpoints": [],
-        }
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+def empty_manifest(cwd: Path) -> dict[str, Any]:
+    return {
+        "version": VERSION,
+        "cwd": str(cwd),
+        "created_at": now_iso(),
+        "checkpoints": [],
+    }
 
 
-def save_manifest(cwd: Path, manifest: dict[str, Any]) -> None:
+def manifest_lock_path(cwd: Path) -> Path:
+    return project_dir(cwd) / "manifest.lock"
+
+
+@contextlib.contextmanager
+def manifest_lock(cwd: Path):
+    path = manifest_lock_path(cwd)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def write_manifest_file(cwd: Path, manifest: dict[str, Any]) -> None:
     path = manifest_path(cwd)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     with tmp.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(tmp, path)
+
+
+def backup_corrupt_manifest(path: Path) -> Path:
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    backup = path.with_name(f"{path.name}.corrupt-{stamp}")
+    if backup.exists():
+        backup = path.with_name(f"{path.name}.corrupt-{stamp}-{time.time_ns()}")
+    shutil.copy2(path, backup)
+    return backup
+
+
+def load_manifest_unlocked(cwd: Path) -> dict[str, Any]:
+    path = manifest_path(cwd)
+    if not path.exists():
+        return empty_manifest(cwd)
+    data = path.read_bytes()
+    decode_error: UnicodeDecodeError | None = None
+    try:
+        raw = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        decode_error = exc
+        raw = data.decode("utf-8", errors="replace")
+    try:
+        manifest = json.loads(raw)
+        if decode_error is not None:
+            backup_corrupt_manifest(path)
+            write_manifest_file(cwd, manifest)
+        return manifest
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        try:
+            manifest, end = decoder.raw_decode(raw)
+        except json.JSONDecodeError:
+            raise
+        if decode_error is not None or raw[end:].strip():
+            backup_corrupt_manifest(path)
+            write_manifest_file(cwd, manifest)
+            return manifest
+        raise exc
+
+
+def load_manifest(cwd: Path) -> dict[str, Any]:
+    with manifest_lock(cwd):
+        return load_manifest_unlocked(cwd)
+
+
+def save_manifest(cwd: Path, manifest: dict[str, Any]) -> None:
+    with manifest_lock(cwd):
+        write_manifest_file(cwd, manifest)
 
 
 def checkpoint_dir(cwd: Path, checkpoint_id: str) -> Path:
@@ -459,12 +522,38 @@ def extract_patch_paths(patch_text: str, cwd: Path) -> list[Path]:
 def shell_path(value: str, cwd: Path) -> Path | None:
     if not value or value.startswith("-"):
         return None
+    if value in {"&&", "||", ";", "|"}:
+        return None
+    if re.match(r"^[0-9]?(?:>>?|<|&>)", value):
+        return None
     if value in {"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin"}:
         return None
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = cwd / path
     return path.resolve()
+
+
+def shell_command_operands(parts: list[str]) -> list[str]:
+    operands: list[str] = []
+    skip_next = False
+    control_tokens = {"&&", "||", ";", "|"}
+    redirection_tokens = {">", ">>", "<", "2>", "2>>", "1>", "1>>", "&>"}
+    for item in parts[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if item in control_tokens:
+            break
+        if item in redirection_tokens:
+            skip_next = True
+            continue
+        if re.match(r"^[0-9]?(?:>>?|<|&>)", item):
+            continue
+        if item.startswith("-"):
+            continue
+        operands.append(item)
+    return operands
 
 
 def extract_shell_paths(command: str, cwd: Path) -> list[Path]:
@@ -483,18 +572,18 @@ def extract_shell_paths(command: str, cwd: Path) -> list[Path]:
 
     command_name = Path(parts[0]).name
     if command_name in {"touch", "rm", "unlink", "mkdir", "rmdir"}:
-        for item in parts[1:]:
+        for item in shell_command_operands(parts):
             path = shell_path(item, cwd)
             if path is not None:
                 paths.append(path)
     elif command_name in {"cp", "mv"}:
-        operands = [item for item in parts[1:] if not item.startswith("-")]
+        operands = shell_command_operands(parts)
         for item in operands[-2:]:
             path = shell_path(item, cwd)
             if path is not None:
                 paths.append(path)
     elif command_name in {"install"}:
-        operands = [item for item in parts[1:] if not item.startswith("-")]
+        operands = shell_command_operands(parts)
         for item in operands[-2:]:
             path = shell_path(item, cwd)
             if path is not None:
