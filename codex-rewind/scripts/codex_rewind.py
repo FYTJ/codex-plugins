@@ -798,6 +798,28 @@ def one_line_preview(text: str, width: int = 120) -> str:
     return preview[:width]
 
 
+MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\((?:\\.|[^)])*\)")
+
+
+def markdown_display_text(text: str) -> str:
+    def replace_link(match: re.Match[str]) -> str:
+        label = match.group(1)
+        return label.replace(r"\[", "[").replace(r"\]", "]")
+
+    previous = text
+    for _ in range(4):
+        current = MARKDOWN_LINK_RE.sub(replace_link, previous)
+        if current == previous:
+            break
+        previous = current
+    return previous
+
+
+def target_display_text(message: dict[str, Any]) -> str:
+    text = message.get("text") or message.get("preview") or ""
+    return " ".join(markdown_display_text(str(text)).strip().split())
+
+
 def parse_session_user_messages(path: Path, *, include_rewind_commands: bool = False) -> list[dict[str, Any]]:
     if not path.exists():
         raise SystemExit(f"Codex session record not found: {path}")
@@ -1428,8 +1450,9 @@ def build_no_apply_selection(
 
 
 def truncate_button_text(index: int, text: str, width: int = 92) -> str:
-    preview = one_line_preview(text, width)
-    if len(" ".join(text.strip().split())) > width:
+    normalized = " ".join(markdown_display_text(text).strip().split())
+    preview = one_line_preview(normalized, width)
+    if len(normalized) > width:
         preview = preview.rstrip() + "..."
     return f"{index}. {preview}"
 
@@ -1499,6 +1522,7 @@ def run_appkit_gui(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
                 "index": int(message["index"]),
                 "preview": message.get("preview") or "",
                 "text": message.get("text") or "",
+                "display_text": target_display_text(message),
                 "checkpoint_id": message.get("checkpoint_id"),
             }
             for message in messages
@@ -1716,12 +1740,10 @@ class RewindGui:
 
         for message in visible_messages:
             index = int(message["index"])
-            checkpoint = message.get("checkpoint_id") or "-"
-            suffix = f"code:{checkpoint}" if checkpoint != "-" else "code:-"
-            text = truncate_button_text(index, message.get("text") or message.get("preview") or "", 50)
+            text = truncate_button_text(index, target_display_text(message), 72)
             button = tk.Button(
                 view,
-                text=f"{text}  {suffix}",
+                text=text,
                 command=lambda value=index: self.choose_target(value),
                 anchor="w",
                 justify="left",
@@ -1799,9 +1821,7 @@ class RewindGui:
 
         for message in self.messages:
             index = int(message["index"])
-            checkpoint = message.get("checkpoint_id") or "-"
-            suffix = f"code:{checkpoint}" if checkpoint != "-" else "code:-"
-            text = truncate_button_text(index, message.get("text") or message.get("preview") or "", 58)
+            text = truncate_button_text(index, target_display_text(message), 74)
             fill = self.PALETTE["panel_active"] if self.hover_target == index else self.PALETTE["panel"]
             canvas.create_rectangle(
                 card_x,
@@ -1819,15 +1839,6 @@ class RewindGui:
                 fill=self.PALETTE["fg"],
                 anchor="nw",
                 font=("Helvetica", 12, "bold"),
-                width=card_w - 20,
-            )
-            canvas.create_text(
-                card_x + 10,
-                y + 37,
-                text=suffix,
-                fill=self.PALETTE["dim"],
-                anchor="nw",
-                font=("Helvetica", 10),
                 width=card_w - 20,
             )
             self.target_hitboxes.append((y, y + card_h, index))
@@ -1919,7 +1930,7 @@ class RewindGui:
         target = select_message(self.messages, str(self.selected_target))
         detail = tk.Button(
             view,
-            text=truncate_button_text(int(target["index"]), target.get("text") or target.get("preview") or "", 72),
+            text=truncate_button_text(int(target["index"]), target_display_text(target), 72),
             state="disabled",
             anchor="w",
             justify="left",

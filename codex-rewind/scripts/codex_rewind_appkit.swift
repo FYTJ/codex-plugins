@@ -5,6 +5,7 @@ struct Target: Decodable {
     let index: Int
     let preview: String?
     let text: String?
+    let display_text: String?
     let checkpoint_id: String?
 }
 
@@ -58,6 +59,12 @@ final class RewindButton: NSButton {
 
     override func mouseExited(with event: NSEvent) {
         layer?.backgroundColor = normalColor.cgColor
+    }
+}
+
+final class FlippedView: NSView {
+    override var isFlipped: Bool {
+        return true
     }
 }
 
@@ -165,6 +172,37 @@ final class RewindController: NSObject, NSApplicationDelegate, NSWindowDelegate 
         return String(normalized[..<end]) + "..."
     }
 
+    func markdownDisplay(_ text: String) -> String {
+        let pattern = #"!?\[([^\]]*)\]\((?:\\.|[^)])*\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return text
+        }
+        var output = text
+        for _ in 0..<4 {
+            let range = NSRange(output.startIndex..<output.endIndex, in: output)
+            let matches = regex.matches(in: output, range: range)
+            if matches.isEmpty {
+                break
+            }
+            for match in matches.reversed() {
+                guard let matchRange = Range(match.range, in: output),
+                      let labelRange = Range(match.range(at: 1), in: output) else {
+                    continue
+                }
+                let label = output[labelRange]
+                    .replacingOccurrences(of: #"\["#, with: "[")
+                    .replacingOccurrences(of: #"\]"#, with: "]")
+                output.replaceSubrange(matchRange, with: label)
+            }
+        }
+        return output
+    }
+
+    func targetText(_ target: Target, limit: Int) -> String {
+        let raw = target.display_text ?? target.text ?? target.preview ?? ""
+        return oneLine(markdownDisplay(raw), limit: limit)
+    }
+
     func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor? = nil) -> NSTextField {
         let view = NSTextField(labelWithString: text)
         view.textColor = color ?? textColor
@@ -188,36 +226,49 @@ final class RewindController: NSObject, NSApplicationDelegate, NSWindowDelegate 
         selectedTarget = nil
         clearRoot()
         let buttonWidth = rootView.bounds.width - margin * 2
-        var y = rootView.bounds.height - 86
+        let y = rootView.bounds.height - 86
 
         let title = label("选择回退目标", size: 15, weight: .bold)
         title.frame = NSRect(x: margin, y: rootView.bounds.height - 42, width: buttonWidth, height: 20)
         rootView.addSubview(title)
 
-        let visibleTargets = targets.prefix(8)
-        if visibleTargets.isEmpty {
+        if targets.isEmpty {
             let empty = label("当前线程没有可回退的用户对话。", size: 13, color: mutedColor)
             empty.frame = NSRect(x: margin, y: y, width: buttonWidth, height: 22)
             rootView.addSubview(empty)
             return
         }
 
-        for target in visibleTargets {
-            let raw = target.text ?? target.preview ?? ""
-            let preview = oneLine(raw, limit: 42)
-            let code = target.checkpoint_id ?? "-"
-            let title = "\(target.index). \(preview)    code:\(code)"
+        let scrollFrame = NSRect(x: margin, y: 14, width: buttonWidth, height: max(120, rootView.bounds.height - 70))
+        let scrollView = NSScrollView(frame: scrollFrame)
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = false
+        scrollView.verticalScrollElasticity = .allowed
+
+        let rowHeight: CGFloat = 38
+        let rowGap: CGFloat = 8
+        let documentWidth = buttonWidth - 14
+        let documentHeight = max(scrollFrame.height, CGFloat(targets.count) * (rowHeight + rowGap) - rowGap + 2)
+        let document = FlippedView(frame: NSRect(x: 0, y: 0, width: documentWidth, height: documentHeight))
+        document.wantsLayer = true
+        document.layer?.backgroundColor = bgColor.cgColor
+
+        var rowY: CGFloat = 0
+        for target in targets {
+            let preview = targetText(target, limit: 58)
+            let title = "\(target.index). \(preview)"
             let button = makeButton(title, action: #selector(selectTarget(_:)), tag: target.index, height: 38)
-            button.frame = NSRect(x: margin, y: y, width: buttonWidth, height: 38)
-            rootView.addSubview(button)
-            y -= 46
+            button.frame = NSRect(x: 0, y: rowY, width: documentWidth, height: rowHeight)
+            document.addSubview(button)
+            rowY += rowHeight + rowGap
         }
 
-        if targets.count > 8 {
-            let more = label("仅显示前 8 个目标；可用数字键选择完整列表中的编号。", size: 11, color: mutedColor)
-            more.frame = NSRect(x: margin, y: max(12, y), width: buttonWidth, height: 18)
-            rootView.addSubview(more)
-        }
+        scrollView.documentView = document
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        rootView.addSubview(scrollView)
     }
 
     func showModes() {
@@ -236,7 +287,7 @@ final class RewindController: NSObject, NSApplicationDelegate, NSWindowDelegate 
         y -= 42
 
         if let target = selectedTarget {
-            let preview = oneLine(target.text ?? target.preview ?? "", limit: 68)
+            let preview = targetText(target, limit: 68)
             let selected = label("\(target.index). \(preview)", size: 12, color: mutedColor)
             selected.frame = NSRect(x: margin, y: y, width: buttonWidth, height: 20)
             rootView.addSubview(selected)
