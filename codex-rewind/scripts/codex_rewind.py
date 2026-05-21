@@ -355,8 +355,16 @@ def dirty_tracked_files(root: Path) -> set[str]:
     return {path for path in dirty if path}
 
 
+def tracked_files(root: Path) -> set[str]:
+    return set(git_z(root, ["ls-files", "-z"]))
+
+
 def untracked_files(root: Path) -> set[str]:
     return set(git_z(root, ["ls-files", "--others", "--exclude-standard", "-z"]))
+
+
+def ignored_files(root: Path) -> set[str]:
+    return set(git_z(root, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"]))
 
 
 def write_checkpoint_bytes(cwd: Path, checkpoint: dict[str, Any], rel: str, data: bytes) -> str | None:
@@ -378,7 +386,9 @@ def capture_git_baseline(cwd: Path, checkpoint: dict[str, Any]) -> None:
     checkpoint["git"] = {
         "root": str(root),
         "has_head": has_head,
+        "baseline_tracked": sorted(tracked_files(root)),
         "baseline_untracked": sorted(untracked_files(root)),
+        "baseline_ignored": sorted(ignored_files(root)),
         "baseline_dirty": sorted(dirty_tracked_files(root)),
         "max_baseline_untracked_bytes": MAX_BASELINE_UNTRACKED_BYTES,
     }
@@ -2203,6 +2213,54 @@ def delete_new_untracked(root: Path, baseline_untracked: set[str], *, dry_run: b
     return actions
 
 
+def remove_workspace_path(path: Path, root: Path) -> None:
+    if not is_inside(path, root):
+        return
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        remove_empty_parents(path.parent, root)
+    except FileNotFoundError:
+        pass
+
+
+def delete_new_ignored(root: Path, baseline_ignored: set[str], *, dry_run: bool) -> list[str]:
+    actions: list[str] = []
+    current_ignored = ignored_files(root)
+    for rel in sorted(current_ignored - baseline_ignored, key=lambda item: (item.count("/"), item), reverse=True):
+        path = root / rel
+        if not is_inside(path, root):
+            continue
+        actions.append(f"delete-new-ignored {path}")
+        if not dry_run:
+            remove_workspace_path(path, root)
+    return actions
+
+
+def delete_new_tracked(
+    root: Path,
+    baseline_tracked: set[str],
+    *,
+    baseline_untracked: set[str],
+    baseline_ignored: set[str],
+    dry_run: bool,
+) -> list[str]:
+    actions: list[str] = []
+    baseline_existing = baseline_tracked | baseline_untracked | baseline_ignored
+    current_tracked = tracked_files(root)
+    for rel in sorted(current_tracked - baseline_existing, key=lambda item: (item.count("/"), item), reverse=True):
+        path = root / rel
+        if not is_inside(path, root):
+            continue
+        actions.append(f"delete-new-tracked {path}")
+        if not dry_run:
+            run(["git", "rm", "--cached", "--ignore-unmatch", "--", rel], cwd=root, check=False)
+            remove_workspace_path(path, root)
+    return actions
+
+
 def apply_git_patch(root: Path, patch: bytes, args: list[str]) -> None:
     if not patch:
         return
@@ -2211,12 +2269,30 @@ def apply_git_patch(root: Path, patch: bytes, args: list[str]) -> None:
 
 def restore_git_snapshot_v2(cwd: Path, checkpoint: dict[str, Any], git_info: dict[str, Any], *, dry_run: bool) -> list[str]:
     root = Path(git_info["root"])
+    baseline_tracked = set(git_info.get("baseline_tracked") or [])
     baseline_untracked = set(git_info.get("baseline_untracked") or [])
+    baseline_ignored = set(git_info.get("baseline_ignored") or [])
     staged_patch = checkpoint_bytes(cwd, checkpoint, git_info.get("baseline_staged_patch"))
     unstaged_patch = checkpoint_bytes(cwd, checkpoint, git_info.get("baseline_unstaged_patch"))
+    new_tracked_actions = (
+        delete_new_tracked(
+            root,
+            baseline_tracked,
+            baseline_untracked=baseline_untracked,
+            baseline_ignored=baseline_ignored,
+            dry_run=True,
+        )
+        if "baseline_tracked" in git_info
+        else []
+    )
+    new_ignored_actions = (
+        delete_new_ignored(root, baseline_ignored, dry_run=True) if "baseline_ignored" in git_info else []
+    )
     actions = [
         f"git-reset-head {root}",
+        *new_tracked_actions,
         *delete_new_untracked(root, baseline_untracked, dry_run=True),
+        *new_ignored_actions,
     ]
     if staged_patch:
         actions.append(f"restore-index {root}")
@@ -2229,12 +2305,26 @@ def restore_git_snapshot_v2(cwd: Path, checkpoint: dict[str, Any], git_info: dic
     if dry_run:
         return actions
 
+    if "baseline_tracked" in git_info:
+        delete_new_tracked(
+            root,
+            baseline_tracked,
+            baseline_untracked=baseline_untracked,
+            baseline_ignored=baseline_ignored,
+            dry_run=False,
+        )
     delete_new_untracked(root, baseline_untracked, dry_run=False)
+    if "baseline_ignored" in git_info:
+        delete_new_ignored(root, baseline_ignored, dry_run=False)
     run(["git", "reset", "--hard", "HEAD"], cwd=root)
     delete_new_untracked(root, baseline_untracked, dry_run=False)
+    if "baseline_ignored" in git_info:
+        delete_new_ignored(root, baseline_ignored, dry_run=False)
     apply_git_patch(root, staged_patch, ["--index"])
     apply_git_patch(root, unstaged_patch, [])
     delete_new_untracked(root, baseline_untracked, dry_run=False)
+    if "baseline_ignored" in git_info:
+        delete_new_ignored(root, baseline_ignored, dry_run=False)
     return actions
 
 
@@ -2252,6 +2342,8 @@ def restore_git_baseline(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool
 
     baseline_untracked = set(git_info.get("baseline_untracked") or [])
     actions.extend(delete_new_untracked(root, baseline_untracked, dry_run=dry_run))
+    if "baseline_ignored" in git_info:
+        actions.extend(delete_new_ignored(root, set(git_info.get("baseline_ignored") or []), dry_run=dry_run))
 
     backed_paths = {
         safe_rel(Path(meta["path"]), root)
