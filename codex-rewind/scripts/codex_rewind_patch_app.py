@@ -8,10 +8,12 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -319,13 +321,77 @@ def patch_conversation_intercept(root: Path) -> Path:
     return path
 
 
-def codex_is_running(app: Path) -> bool:
+def parse_pgrep_pids(output: str) -> list[int]:
+    pids: list[int] = []
+    for line in output.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        try:
+            pids.append(int(value))
+        except ValueError:
+            continue
+    return pids
+
+
+def codex_process_ids(app: Path) -> list[int]:
+    pids: set[int] = set()
     result = run(["pgrep", "-x", "Codex"], check=False)
-    if result.returncode == 0 and result.stdout.strip():
-        return True
+    if result.returncode == 0:
+        pids.update(parse_pgrep_pids(result.stdout))
     contents = app / "Contents"
     result = run(["pgrep", "-f", re.escape(str(contents))], check=False)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    if result.returncode == 0:
+        pids.update(parse_pgrep_pids(result.stdout))
+    pids.discard(os.getpid())
+    return sorted(pids)
+
+
+def codex_is_running(app: Path) -> bool:
+    return bool(codex_process_ids(app))
+
+
+def wait_for_exit(pids: list[int], timeout_seconds: float) -> list[int]:
+    deadline = time.monotonic() + timeout_seconds
+    remaining = list(pids)
+    while remaining and time.monotonic() < deadline:
+        remaining = [pid for pid in remaining if process_exists(pid)]
+        if remaining:
+            time.sleep(0.2)
+    return [pid for pid in remaining if process_exists(pid)]
+
+
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def terminate_codex_processes(app: Path) -> None:
+    pids = codex_process_ids(app)
+    if not pids:
+        return
+    print(f"terminating Codex processes: {', '.join(str(pid) for pid in pids)}")
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    remaining = wait_for_exit(pids, 5)
+    if remaining:
+        print(f"force killing Codex processes: {', '.join(str(pid) for pid in remaining)}")
+        for pid in remaining:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        remaining = wait_for_exit(remaining, 3)
+    if remaining:
+        raise SystemExit(f"Codex processes are still running: {', '.join(str(pid) for pid in remaining)}")
 
 
 def verify_signature(app: Path) -> tuple[bool, str]:
@@ -345,19 +411,28 @@ def sign_app(app: Path) -> None:
 
 
 def ensure_not_running(app: Path, args: argparse.Namespace) -> None:
-    if codex_is_running(app) and not args.allow_running:
+    pids = codex_process_ids(app)
+    if not pids or args.allow_running:
+        return
+    if not sys.stdin.isatty():
         raise SystemExit(
-            "Codex is currently running. Quit Codex first, or pass --allow-running if you accept that the current process will keep using the old app.asar until restart."
+            "Codex is currently running. Re-run this command from an interactive terminal to confirm killing Codex processes, or pass --allow-running."
         )
+    answer = input(
+        f"Codex is currently running (pids: {', '.join(str(pid) for pid in pids)}). Kill all Codex processes before patching? [y/N] "
+    ).strip().lower()
+    if answer not in {"y", "yes"}:
+        raise SystemExit("Patch cancelled because Codex is still running.")
+    terminate_codex_processes(app)
 
 
 def maybe_sign_existing_app(app: Path, asar_path: Path, args: argparse.Namespace) -> bool:
+    ensure_not_running(app, args)
     actual_hash = update_asar_integrity(app, asar_path)
     print(f"asar-integrity: updated {actual_hash}")
     if args.skip_sign:
         print("codesign: skipped")
         return False
-    ensure_not_running(app, args)
     print("codesign: ad-hoc signing app bundle...")
     sign_app(app)
     return True

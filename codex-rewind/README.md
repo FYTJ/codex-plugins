@@ -73,7 +73,8 @@ App patch 主脚本：
 
 ## 失败处理
 
-- 如果提示 Codex 正在运行，先退出 Codex App 后重试。
+- 如果提示 Codex 正在运行，脚本会询问是否 kill 所有 Codex App 相关进程。输入 `y` 后脚本会先尝试正常终止，必要时再强制 kill；输入 `n` 或直接回车会取消 patch。
+- 如果在非交互环境运行并提示 Codex 正在运行，请改到终端中运行，或显式传入 `--allow-running`。
 - 如果提示找不到 `asar`，脚本会优先使用 `npx --yes @electron/asar`；如果本机没有 `npx`，先安装 Node/npm 环境。
 - 脚本会在替换前备份 `app.asar` 和 `app.asar.unpacked`，备份文件位于 `/Applications/Codex.app/Contents/Resources/`。
 - patch 后脚本会更新 `ElectronAsarIntegrity` 并对 App 做 ad-hoc codesign；如果其中任一步失败，不要启动 App，先查看脚本错误输出。
