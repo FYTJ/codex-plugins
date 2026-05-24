@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import plistlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -50,6 +52,91 @@ def app_version(app: Path) -> str:
         return f"{short} ({build})"
     except Exception:
         return "unknown"
+
+
+def read_pickle_payload(buf: bytes) -> memoryview:
+    if len(buf) < 4:
+        raise RuntimeError("Invalid asar pickle: too short")
+    payload_size = struct.unpack_from("<I", buf, 0)[0]
+    header_size = len(buf) - payload_size
+    if header_size < 4 or header_size % 4 != 0 or payload_size < 0:
+        raise RuntimeError("Invalid asar pickle header size")
+    if header_size + payload_size > len(buf):
+        raise RuntimeError("Invalid asar pickle payload size")
+    return memoryview(buf)[header_size : header_size + payload_size]
+
+
+def read_pickle_uint32(buf: bytes) -> int:
+    payload = read_pickle_payload(buf)
+    if len(payload) < 4:
+        raise RuntimeError("Invalid asar pickle uint32 payload")
+    return struct.unpack_from("<I", payload, 0)[0]
+
+
+def read_pickle_string_bytes(buf: bytes) -> bytes:
+    payload = read_pickle_payload(buf)
+    if len(payload) < 4:
+        raise RuntimeError("Invalid asar pickle string payload")
+    size = struct.unpack_from("<i", payload, 0)[0]
+    if size < 0 or 4 + size > len(payload):
+        raise RuntimeError("Invalid asar pickle string length")
+    return bytes(payload[4 : 4 + size])
+
+
+def asar_header_hash(asar_path: Path) -> str:
+    with asar_path.open("rb") as handle:
+        size_buf = handle.read(8)
+        if len(size_buf) != 8:
+            raise RuntimeError(f"Cannot read asar header size from {asar_path}")
+        header_size = read_pickle_uint32(size_buf)
+        header_buf = handle.read(header_size)
+        if len(header_buf) != header_size:
+            raise RuntimeError(f"Cannot read asar header from {asar_path}")
+    header_string = read_pickle_string_bytes(header_buf)
+    return hashlib.sha256(header_string).hexdigest()
+
+
+def expected_asar_header_hash(app: Path, asar_path: Path) -> str | None:
+    plist = app / "Contents" / "Info.plist"
+    if not plist.exists():
+        return None
+    with plist.open("rb") as handle:
+        info = plistlib.load(handle)
+    key = str(asar_path.relative_to(app / "Contents"))
+    entry = info.get("ElectronAsarIntegrity", {}).get(key)
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("hash")
+    return value if isinstance(value, str) else None
+
+
+def update_asar_integrity(app: Path, asar_path: Path) -> str:
+    plist = app / "Contents" / "Info.plist"
+    if not plist.exists():
+        raise RuntimeError(f"Info.plist not found: {plist}")
+    with plist.open("rb") as handle:
+        info = plistlib.load(handle)
+    key = str(asar_path.relative_to(app / "Contents"))
+    actual_hash = asar_header_hash(asar_path)
+    integrity = info.setdefault("ElectronAsarIntegrity", {})
+    if not isinstance(integrity, dict):
+        integrity = {}
+        info["ElectronAsarIntegrity"] = integrity
+    integrity[key] = {"algorithm": "SHA256", "hash": actual_hash}
+    with plist.open("wb") as handle:
+        plistlib.dump(info, handle, fmt=plistlib.FMT_XML, sort_keys=False)
+    return actual_hash
+
+
+def print_asar_integrity(app: Path, asar_path: Path) -> bool:
+    actual = asar_header_hash(asar_path)
+    expected = expected_asar_header_hash(app, asar_path)
+    ok = expected == actual
+    print(f"asar-integrity: {'valid' if ok else 'invalid'}")
+    if not ok:
+        print(f"asar-integrity-expected: {expected or 'missing'}")
+        print(f"asar-integrity-actual: {actual}")
+    return ok
 
 
 def is_patched(asar_path: Path) -> bool:
@@ -264,7 +351,9 @@ def ensure_not_running(app: Path, args: argparse.Namespace) -> None:
         )
 
 
-def maybe_sign_existing_app(app: Path, args: argparse.Namespace) -> bool:
+def maybe_sign_existing_app(app: Path, asar_path: Path, args: argparse.Namespace) -> bool:
+    actual_hash = update_asar_integrity(app, asar_path)
+    print(f"asar-integrity: updated {actual_hash}")
     if args.skip_sign:
         print("codesign: skipped")
         return False
@@ -291,18 +380,20 @@ def patch_app(args: argparse.Namespace) -> int:
     if is_patched(asar_path) and not args.force:
         print("status: already patched")
         if args.dry_run:
+            print_asar_integrity(app, asar_path)
             valid, detail = verify_signature(app)
             print(f"codesign: {'valid' if valid else 'invalid'}")
             if detail:
                 print(f"codesign-detail: {detail}")
             print("dry-run: no files changed")
             return 0
-        signed = maybe_sign_existing_app(app, args)
+        signed = maybe_sign_existing_app(app, asar_path, args)
         print("status: signed" if signed else "status: ready")
         return 0
 
     if args.dry_run:
         print("status: patch needed" if not is_patched(asar_path) else "status: already patched, --force would repatch")
+        print_asar_integrity(app, asar_path)
         valid, detail = verify_signature(app)
         print(f"codesign: {'valid' if valid else 'invalid'}")
         if detail:
@@ -347,7 +438,7 @@ def patch_app(args: argparse.Namespace) -> int:
         print(f"backup: {backup}")
         shutil.copy2(asar_path, backup)
         if unpacked_dir.exists():
-            unpacked_backup = unpacked_dir.with_name(f"{unpacked_dir.name}.bak.rewind-postupdate-{timestamp}")
+            unpacked_backup = backup.with_name(f"{backup.name}.unpacked")
             print(f"backup unpacked: {unpacked_backup}")
             if unpacked_backup.exists():
                 shutil.rmtree(unpacked_backup)
@@ -357,6 +448,9 @@ def patch_app(args: argparse.Namespace) -> int:
             if unpacked_dir.exists():
                 shutil.rmtree(unpacked_dir)
             shutil.move(str(generated_unpacked), str(unpacked_dir))
+
+    actual_hash = update_asar_integrity(app, asar_path)
+    print(f"asar-integrity: updated {actual_hash}")
 
     if args.skip_sign:
         print("codesign: skipped")

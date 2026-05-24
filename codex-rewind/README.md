@@ -19,7 +19,7 @@
 ~/.codex/bin/codex-rewind-patch-app
 ```
 
-Codex App 更新后，重新运行 `codex-rewind-patch-app --dry-run`。如果需要 patch，脚本会备份 `app.asar`，重新打包，并对 `/Applications/Codex.app` 做 ad-hoc `codesign`。
+Codex App 更新后，重新运行 `codex-rewind-patch-app --dry-run`。如果需要 patch，脚本会备份 `app.asar`，重新打包，更新 Electron 的 asar integrity hash，并对 `/Applications/Codex.app` 做 ad-hoc `codesign`。
 
 ## Codex App 更新后的处理
 
@@ -33,21 +33,21 @@ Codex App 更新通常会替换：
 
 1. 退出正在运行的 Codex App。
 
-2. 先检查当前 App 是否已经注入，并检查签名状态：
+2. 先检查当前 App 是否已经注入，并检查 asar integrity 和签名状态：
 
 ```bash
 ~/.codex/bin/codex-rewind-patch-app --dry-run
 ```
 
-如果输出同时包含 `status: already patched` 和 `codesign: valid`，不需要继续操作。
+如果输出同时包含 `status: already patched`、`asar-integrity: valid` 和 `codesign: valid`，不需要继续操作。
 
-3. 如果输出 `status: patch needed` 或 `codesign: invalid`，运行：
+3. 如果输出 `status: patch needed`、`asar-integrity: invalid` 或 `codesign: invalid`，运行：
 
 ```bash
 ~/.codex/bin/codex-rewind-patch-app
 ```
 
-如果 App 已经注入但签名需要修复，脚本会跳过 asar 重写，只重新执行 ad-hoc codesign。
+如果 App 已经注入但 integrity 或签名需要修复，脚本会跳过 asar 重写，只更新 `Info.plist` 中的 `ElectronAsarIntegrity` 并重新执行 ad-hoc codesign。
 
 4. 重新启动 Codex App。
 
@@ -76,7 +76,7 @@ App patch 主脚本：
 - 如果提示 Codex 正在运行，先退出 Codex App 后重试。
 - 如果提示找不到 `asar`，脚本会优先使用 `npx --yes @electron/asar`；如果本机没有 `npx`，先安装 Node/npm 环境。
 - 脚本会在替换前备份 `app.asar` 和 `app.asar.unpacked`，备份文件位于 `/Applications/Codex.app/Contents/Resources/`。
-- patch 后脚本会对 App 做 ad-hoc codesign；如果 codesign 失败，不要启动 App，先查看脚本错误输出。
+- patch 后脚本会更新 `ElectronAsarIntegrity` 并对 App 做 ad-hoc codesign；如果其中任一步失败，不要启动 App，先查看脚本错误输出。
 
 ## 快速验证
 
