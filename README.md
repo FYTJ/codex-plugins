@@ -102,7 +102,7 @@ enabled = true
 
 ## 功能说明
 
-命令检查 hook 读取黑名单规则，然后检查每次 Bash 工具调用。命中后会打开一个 macOS 弹窗，窗口里展示项目名、命中的短语和完整命令文本；只有选择 `Allow` 才会继续执行，选择 `Deny` 或弹窗失败会向 Codex 返回 deny 决策。示例配置把 Codex 外层 hook timeout 设为 86400 秒，脚本内部会在 86340 秒先返回 deny，避免外层超时后放行。默认规则来源是 `~/.claude/settings.json` 里的 `permissions.ask`，也可以设置 `CODEX_BLACKLIST_RULES_FILE` 指向普通文本规则文件。
+命令检查 hook 读取黑名单规则，然后检查每次 Bash 工具调用。命中后会打开一个 macOS 弹窗，窗口里展示项目名、命中的短语和完整命令文本；只有选择 `Allow` 才会继续执行，选择 `Deny` 或弹窗失败会向 Codex 返回 deny 决策。示例配置把 Codex 外层 hook timeout 设为 86400 秒，脚本内部会在 86340 秒先返回 deny，避免外层超时后放行。当 Codex 以完全访问权限运行时，脚本会直接跳过黑名单审批逻辑。默认规则来源是 `~/.claude/settings.json` 里的 `permissions.ask`，也可以设置 `CODEX_BLACKLIST_RULES_FILE` 指向普通文本规则文件。
 
 回合完成通知使用 Codex 的 `notify` 入口，只处理 `agent-turn-complete` 事件。脚本会做短窗口去重，并用 `osascript` 发送 macOS 系统通知。这个发布版移除了 iPhone/Bark 推送路径，只保留本机通知。
 

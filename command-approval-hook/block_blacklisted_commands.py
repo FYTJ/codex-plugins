@@ -24,6 +24,108 @@ RULES_FILE = (
     else None
 )
 APPROVAL_TIMEOUT_SEC = 86_340
+FULL_ACCESS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
+
+
+def iter_payload_values(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from iter_payload_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_payload_values(child)
+    elif isinstance(value, (str, int, float, bool)):
+        yield str(value)
+
+
+def payload_indicates_full_access(payload: dict) -> bool:
+    values = {value.lower() for value in iter_payload_values(payload)}
+    has_unrestricted_sandbox = bool(
+        values
+        & {
+            "danger-full-access",
+            "danger_full_access",
+            "full-access",
+            "full_access",
+            "unrestricted",
+        }
+    )
+    has_no_approval = bool(
+        values
+        & {
+            "never",
+            "bypass",
+            "bypassed",
+            "no-approval",
+            "no_approval",
+            "full-access",
+            "full_access",
+        }
+    )
+    return has_unrestricted_sandbox and has_no_approval
+
+
+def env_indicates_full_access() -> bool:
+    for key, value in os.environ.items():
+        if not key.startswith("CODEX"):
+            continue
+        text = f"{key}={value}".lower()
+        if FULL_ACCESS_FLAG in text:
+            return True
+        if "danger" in text and "bypass" in text:
+            return True
+        if "full" in text and "access" in text:
+            return True
+    return False
+
+
+def ancestor_command_lines() -> list[str]:
+    command_lines: list[str] = []
+    pid = os.getppid()
+    seen: set[int] = set()
+
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-p", str(pid), "-o", "ppid=,command="],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+        except Exception:
+            break
+
+        line = result.stdout.strip()
+        if not line:
+            break
+
+        parts = line.split(None, 1)
+        if len(parts) == 1:
+            break
+
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            break
+
+        command_lines.append(parts[1])
+
+    return command_lines
+
+
+def ancestor_indicates_full_access() -> bool:
+    return any(FULL_ACCESS_FLAG in command for command in ancestor_command_lines())
+
+
+def should_skip_for_full_access(payload: dict) -> bool:
+    return (
+        payload_indicates_full_access(payload)
+        or env_indicates_full_access()
+        or ancestor_indicates_full_access()
+    )
 
 
 def shell_words(text: str) -> list[str]:
@@ -387,6 +489,9 @@ def deny_reason_phrases(phrases: list[tuple[str, ...]]) -> str:
 
 def main() -> int:
     payload = json.load(sys.stdin)
+    if should_skip_for_full_access(payload):
+        return 0
+
     command = payload.get("tool_input", {}).get("command", "")
     normalized = normalize_command(command)
     phrases = find_blacklisted_phrases(normalized)

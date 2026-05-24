@@ -1,6 +1,6 @@
 # 命令检查 hook
 
-`block_blacklisted_commands.py` 是 Codex `PreToolUse` hook。它检查 Bash 命令是否命中黑名单短语，命中时弹出 macOS 审批窗口。只有用户选择 `Allow` 才会放行；选择 `Deny`、弹窗失败或脚本内部等待超时都会返回 deny。示例 `hooks.json` 把 Codex 外层 hook timeout 设为 86400 秒，脚本内部会在 86340 秒先返回 deny，避免外层超时后放行。
+`block_blacklisted_commands.py` 是 Codex `PreToolUse` hook。它检查 Bash 命令是否命中黑名单短语，命中时弹出 macOS 审批窗口。只有用户选择 `Allow` 才会放行；选择 `Deny`、弹窗失败或脚本内部等待超时都会返回 deny。示例 `hooks.json` 把 Codex 外层 hook timeout 设为 86400 秒，脚本内部会在 86340 秒先返回 deny，避免外层超时后放行。当 Codex 以完全访问权限运行时，脚本会直接跳过黑名单审批逻辑。
 
 默认读取 `~/.claude/settings.json` 中的 `permissions.ask`。也可以设置：
 
