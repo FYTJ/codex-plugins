@@ -122,11 +122,13 @@ Codex App 更新通常会替换：
 ~/.codex/bin/codex-rewind-patch-app --dry-run
 ```
 
-如果输出 `status: already patched`，不需要继续操作。如果输出 `status: patch needed`，执行：
+如果输出同时包含 `status: already patched` 和 `codesign: valid`，不需要继续操作。如果输出 `status: patch needed` 或 `codesign: invalid`，执行：
 
 ```bash
 ~/.codex/bin/codex-rewind-patch-app
 ```
+
+如果 App 已经注入但签名需要修复，脚本会跳过 asar 重写，只重新执行 ad-hoc codesign。
 
 脚本会完成这些动作：
 

@@ -33,19 +33,21 @@ Codex App 更新通常会替换：
 
 1. 退出正在运行的 Codex App。
 
-2. 先检查当前 App 是否已经注入：
+2. 先检查当前 App 是否已经注入，并检查签名状态：
 
 ```bash
 ~/.codex/bin/codex-rewind-patch-app --dry-run
 ```
 
-如果输出包含 `status: already patched`，不需要继续操作。
+如果输出同时包含 `status: already patched` 和 `codesign: valid`，不需要继续操作。
 
-3. 如果需要重新注入，运行：
+3. 如果输出 `status: patch needed` 或 `codesign: invalid`，运行：
 
 ```bash
 ~/.codex/bin/codex-rewind-patch-app
 ```
+
+如果 App 已经注入但签名需要修复，脚本会跳过 asar 重写，只重新执行 ad-hoc codesign。
 
 4. 重新启动 Codex App。
 

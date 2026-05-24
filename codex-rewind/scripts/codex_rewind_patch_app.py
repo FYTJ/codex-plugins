@@ -232,9 +232,19 @@ def patch_conversation_intercept(root: Path) -> Path:
     return path
 
 
-def codex_is_running() -> bool:
+def codex_is_running(app: Path) -> bool:
     result = run(["pgrep", "-x", "Codex"], check=False)
+    if result.returncode == 0 and result.stdout.strip():
+        return True
+    contents = app / "Contents"
+    result = run(["pgrep", "-f", re.escape(str(contents))], check=False)
     return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def verify_signature(app: Path) -> tuple[bool, str]:
+    result = run(["codesign", "--verify", "--deep", "--strict", str(app)], check=False)
+    detail = (result.stderr or result.stdout).strip()
+    return result.returncode == 0, detail
 
 
 def sign_app(app: Path) -> None:
@@ -242,10 +252,26 @@ def sign_app(app: Path) -> None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"codesign failed: {detail}")
-    verify = run(["codesign", "--verify", "--deep", "--strict", str(app)], check=False)
-    if verify.returncode != 0:
-        detail = (verify.stderr or verify.stdout).strip()
+    valid, detail = verify_signature(app)
+    if not valid:
         raise RuntimeError(f"codesign verify failed: {detail}")
+
+
+def ensure_not_running(app: Path, args: argparse.Namespace) -> None:
+    if codex_is_running(app) and not args.allow_running:
+        raise SystemExit(
+            "Codex is currently running. Quit Codex first, or pass --allow-running if you accept that the current process will keep using the old app.asar until restart."
+        )
+
+
+def maybe_sign_existing_app(app: Path, args: argparse.Namespace) -> bool:
+    if args.skip_sign:
+        print("codesign: skipped")
+        return False
+    ensure_not_running(app, args)
+    print("codesign: ad-hoc signing app bundle...")
+    sign_app(app)
+    return True
 
 
 def patch_app(args: argparse.Namespace) -> int:
@@ -264,17 +290,27 @@ def patch_app(args: argparse.Namespace) -> int:
 
     if is_patched(asar_path) and not args.force:
         print("status: already patched")
+        if args.dry_run:
+            valid, detail = verify_signature(app)
+            print(f"codesign: {'valid' if valid else 'invalid'}")
+            if detail:
+                print(f"codesign-detail: {detail}")
+            print("dry-run: no files changed")
+            return 0
+        signed = maybe_sign_existing_app(app, args)
+        print("status: signed" if signed else "status: ready")
         return 0
 
     if args.dry_run:
         print("status: patch needed" if not is_patched(asar_path) else "status: already patched, --force would repatch")
+        valid, detail = verify_signature(app)
+        print(f"codesign: {'valid' if valid else 'invalid'}")
+        if detail:
+            print(f"codesign-detail: {detail}")
         print("dry-run: no files changed")
         return 0
 
-    if codex_is_running() and not args.allow_running:
-        raise SystemExit(
-            "Codex is currently running. Quit Codex first, or pass --allow-running if you accept that the current process will keep using the old app.asar until restart."
-        )
+    ensure_not_running(app, args)
 
     asar_cmd = find_asar_cmd(args.asar_cmd)
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
