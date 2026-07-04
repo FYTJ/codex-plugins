@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 /Users/YOU/.codex/hooks/block_blacklisted_commands.py",
+            "command": "python3 ~/.codex/hooks/block_blacklisted_commands.py",
             "statusMessage": "Checking command blacklist",
             "timeout": 86400
           }

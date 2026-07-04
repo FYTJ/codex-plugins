@@ -4,9 +4,9 @@
 
 主要文件：
 
-- `scripts/codex_rewind.py`：checkpoint、target 列表、preview、回退执行和 GUI fallback。
-- `scripts/codex_rewind_appkit.swift`：macOS AppKit 原生选择窗口。
-- `scripts/codex_rewind_patch_app.py`：修改 Codex.app 的 `app.asar`，让 App 在发送前拦截纯 `/rewind`。
+- `~/.codex/plugins/codex-rewind/scripts/codex_rewind.py`：checkpoint、target 列表、preview、回退执行和 GUI fallback。
+- `~/.codex/plugins/codex-rewind/scripts/codex_rewind_appkit.swift`：macOS AppKit 原生选择窗口。
+- `~/.codex/plugins/codex-rewind/scripts/codex_rewind_patch_app.py`：修改 Codex.app 的 `app.asar`，让 App 在发送前拦截纯 `/rewind`。
 - `bin/codex-rewind` 和 `bin/codex-rewind-patch-app`：可符号链接到 `~/.codex/bin` 的入口。
 
 常用命令：
@@ -15,11 +15,45 @@
 ~/.codex/bin/codex-rewind --help
 ~/.codex/bin/codex-rewind targets --cwd "$PWD"
 ~/.codex/bin/codex-rewind gui --cwd "$PWD"
+~/.codex/bin/codex-rewind gc --cwd "$PWD"
 ~/.codex/bin/codex-rewind-patch-app --dry-run
 ~/.codex/bin/codex-rewind-patch-app
 ```
 
 Codex App 更新后，重新运行 `codex-rewind-patch-app --dry-run`。如果需要 patch，脚本会备份 `app.asar`，重新打包，更新 Electron 的 asar integrity hash，并对 `/Applications/Codex.app` 做 ad-hoc `codesign`。
+
+## Rewind 数据结构
+
+`/rewind` 的文件回退模型对齐 Claude Code：每个用户 prompt 建立一个 file-history snapshot，工具写入前记录相关文件的 preimage。回退代码时按目标 snapshot 恢复；如果某个文件在目标 snapshot 中不存在但后来被追踪，会使用该文件的最早版本，新建文件因此会被删除。
+
+为了避免长会话打开弹窗变慢，`manifest.json` 只保留 checkpoint 摘要和索引；重型数据被拆到：
+
+- `file-history-state.json`：当前被追踪文件及其版本链。
+- `checkpoints/<checkpoint-id>/checkpoint.json`：单个 checkpoint 的完整 snapshot。
+- `file-history/<hash>@v<version>`：实际文件备份。
+
+目标选择窗口只读取会话 JSONL 和轻量 manifest；只有用户选择“仅代码”或“对话和代码”后，才加载对应 checkpoint 和 file-history 状态计算恢复动作。
+
+### 空间控制
+
+- 单个 file-history 实体备份默认上限为 16MB，可用 `CODEX_REWIND_MAX_FILE_HISTORY_FILE_BYTES` 覆盖。超过上限的文件只记录 skipped 元数据，preview/restore 会提示该文件未备份。
+- Bash 捕获范围对齐 Claude Code：普通 shell 命令不解析路径；只有 `_simulatedSedEdit.filePath` 这类可预览 sed edit 会进入 file-history。`Write`、`Edit`、`NotebookEdit`、`apply_patch` 仍按显式文件路径或 patch header 捕获。
+- 默认排除 rewind 存储自身、`.codex/backups`、`.codex/tmp`、App bundle、常见生成目录和二进制/归档后缀，避免把 `app.asar`、Codex 二进制、构建产物和缓存纳入 rewind。
+- `UserPromptSubmit` hook 会按 Claude Code 的清理口径，每天最多一次清理 30 天以上的 rewind 数据。清理天数可用 `CODEX_REWIND_CLEANUP_DAYS` 覆盖。
+
+手动预览 GC：
+
+```bash
+~/.codex/bin/codex-rewind gc --cwd "$PWD"
+~/.codex/bin/codex-rewind gc --all
+```
+
+确认后实际清理：
+
+```bash
+~/.codex/bin/codex-rewind gc --cwd "$PWD" --yes
+~/.codex/bin/codex-rewind gc --all --yes
+```
 
 ## Codex App 更新后的处理
 

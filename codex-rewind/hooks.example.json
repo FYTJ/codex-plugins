@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOU/.codex/bin/codex-rewind hook-user-prompt",
+            "command": "~/.codex/bin/codex-rewind hook-user-prompt",
             "statusMessage": "Checking rewind command",
             "timeout": 3600
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOU/.codex/bin/codex-rewind hook-pre-tool",
+            "command": "~/.codex/bin/codex-rewind hook-pre-tool",
             "statusMessage": "Capturing rewind preimage"
           }
         ]

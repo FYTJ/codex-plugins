@@ -14,6 +14,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -29,7 +30,67 @@ MAX_BASELINE_UNTRACKED_BYTES = int(
 MAX_WORKSPACE_SNAPSHOT_ENTRIES = int(
     os.environ.get("CODEX_REWIND_MAX_WORKSPACE_SNAPSHOT_ENTRIES", "100000")
 )
+MAX_WORKSPACE_SNAPSHOT_FILE_BYTES = int(
+    os.environ.get("CODEX_REWIND_MAX_WORKSPACE_SNAPSHOT_FILE_BYTES", str(MAX_BASELINE_UNTRACKED_BYTES))
+)
+MAX_WORKSPACE_SNAPSHOT_TOTAL_BYTES = int(
+    os.environ.get("CODEX_REWIND_MAX_WORKSPACE_SNAPSHOT_TOTAL_BYTES", "67108864")
+)
+MAX_WORKSPACE_SNAPSHOT_SKIPPED_PATHS = int(
+    os.environ.get("CODEX_REWIND_MAX_WORKSPACE_SNAPSHOT_SKIPPED_PATHS", "200")
+)
+MAX_FILE_HISTORY_SNAPSHOTS = int(os.environ.get("CODEX_REWIND_MAX_FILE_HISTORY_SNAPSHOTS", "100"))
+MAX_FILE_HISTORY_FILE_BYTES = int(
+    os.environ.get("CODEX_REWIND_MAX_FILE_HISTORY_FILE_BYTES", str(16 * 1024 * 1024))
+)
+REWIND_CLEANUP_DAYS = int(os.environ.get("CODEX_REWIND_CLEANUP_DAYS", "30"))
+REWIND_CLEANUP_INTERVAL_SECONDS = int(os.environ.get("CODEX_REWIND_CLEANUP_INTERVAL_SECONDS", "86400"))
 SESSION_ROLLBACK_METHOD = "thread/rollback"
+
+EXCLUDED_FILE_HISTORY_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".next",
+    ".turbo",
+    ".venv",
+    "venv",
+    "target",
+    "build",
+    "dist",
+    "DerivedData",
+}
+EXCLUDED_FILE_HISTORY_SUFFIXES = {
+    ".asar",
+    ".dmg",
+    ".pkg",
+    ".zip",
+    ".tar",
+    ".tgz",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".iso",
+    ".pyc",
+    ".o",
+    ".a",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".bin",
+    ".class",
+    ".jar",
+}
+PROJECT_DIR_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def now_iso() -> str:
@@ -118,6 +179,10 @@ def manifest_path(cwd: Path) -> Path:
     return project_dir(cwd) / "manifest.json"
 
 
+def file_history_state_path(cwd: Path) -> Path:
+    return project_dir(cwd) / "file-history-state.json"
+
+
 def empty_manifest(cwd: Path) -> dict[str, Any]:
     return {
         "version": VERSION,
@@ -143,14 +208,151 @@ def manifest_lock(cwd: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def write_manifest_file(cwd: Path, manifest: dict[str, Any]) -> None:
-    path = manifest_path(cwd)
+def write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(manifest, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(tmp, path)
+
+
+CHECKPOINT_SUMMARY_KEYS = (
+    "id",
+    "sequence",
+    "history_version",
+    "created_at",
+    "cwd",
+    "thread_id",
+    "turn_id",
+    "user_message_id",
+    "source",
+    "prompt_preview",
+)
+CHECKPOINT_HEAVY_KEYS = {
+    "tracked_file_backups",
+    "file_backups",
+    "git",
+    "workspace",
+}
+
+
+def checkpoint_data_path(cwd: Path, checkpoint_id: str) -> Path:
+    return checkpoint_dir(cwd, checkpoint_id) / "checkpoint.json"
+
+
+def checkpoint_has_heavy_data(checkpoint: dict[str, Any]) -> bool:
+    return any(key in checkpoint for key in CHECKPOINT_HEAVY_KEYS)
+
+
+def checkpoint_summary(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    summary = {key: checkpoint.get(key) for key in CHECKPOINT_SUMMARY_KEYS if key in checkpoint}
+    checkpoint_id = checkpoint.get("id")
+    if checkpoint_id:
+        summary["checkpoint_file"] = f"checkpoints/{checkpoint_id}/checkpoint.json"
+    backups = checkpoint.get("tracked_file_backups")
+    if not isinstance(backups, dict):
+        backups = checkpoint.get("file_backups")
+    if isinstance(backups, dict):
+        summary["tracked_file_count"] = len(backups)
+    git_info = checkpoint.get("git")
+    if isinstance(git_info, dict):
+        summary["has_git"] = bool(git_info.get("root"))
+    workspace = checkpoint.get("workspace")
+    if isinstance(workspace, dict):
+        summary["has_workspace"] = True
+    return summary
+
+
+def lightweight_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    out = {key: value for key, value in manifest.items() if key != "tracked_files"}
+    checkpoints = out.get("checkpoints")
+    if isinstance(checkpoints, list):
+        out["checkpoints"] = [
+            checkpoint_summary(item) if isinstance(item, dict) else item
+            for item in checkpoints[-MAX_FILE_HISTORY_SNAPSHOTS:]
+        ]
+    else:
+        out["checkpoints"] = []
+    return out
+
+
+def manifest_needs_split(manifest: dict[str, Any]) -> bool:
+    if "tracked_files" in manifest:
+        return True
+    checkpoints = manifest.get("checkpoints")
+    return isinstance(checkpoints, list) and any(
+        isinstance(item, dict) and checkpoint_has_heavy_data(item)
+        for item in checkpoints
+    )
+
+
+def write_checkpoint_data(cwd: Path, checkpoint: dict[str, Any]) -> None:
+    checkpoint_id = checkpoint.get("id")
+    if not isinstance(checkpoint_id, str) or not checkpoint_id:
+        return
+    path = checkpoint_data_path(cwd, checkpoint_id)
+    if not checkpoint_has_heavy_data(checkpoint) and path.exists():
+        return
+    write_json_file(path, checkpoint)
+
+
+def load_checkpoint(cwd: Path, checkpoint: dict[str, Any] | None) -> dict[str, Any] | None:
+    if checkpoint is None:
+        return None
+    checkpoint_id = checkpoint.get("id")
+    if not isinstance(checkpoint_id, str) or not checkpoint_id:
+        return checkpoint
+    path = checkpoint_data_path(cwd, checkpoint_id)
+    if not path.exists():
+        return checkpoint
+    try:
+        full = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return checkpoint
+    if not isinstance(full, dict):
+        return checkpoint
+    for key, value in checkpoint.items():
+        full.setdefault(key, value)
+    return full
+
+
+def load_file_history_state(cwd: Path) -> dict[str, Any]:
+    path = file_history_state_path(cwd)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    tracked = payload.get("tracked_files") if isinstance(payload, dict) else None
+    return tracked if isinstance(tracked, dict) else {}
+
+
+def write_file_history_state(cwd: Path, tracked_files: dict[str, Any]) -> None:
+    write_json_file(
+        file_history_state_path(cwd),
+        {
+            "version": VERSION,
+            "cwd": str(cwd),
+            "updated_at": now_iso(),
+            "tracked_files": tracked_files,
+        },
+    )
+
+
+def write_manifest_file(cwd: Path, manifest: dict[str, Any]) -> None:
+    tracked = manifest.get("tracked_files")
+    if isinstance(tracked, dict):
+        write_file_history_state(cwd, tracked)
+
+    checkpoints = manifest.get("checkpoints")
+    if isinstance(checkpoints, list):
+        for checkpoint in checkpoints:
+            if isinstance(checkpoint, dict):
+                write_checkpoint_data(cwd, checkpoint)
+
+    write_json_file(manifest_path(cwd), lightweight_manifest(manifest))
 
 
 def backup_corrupt_manifest(path: Path) -> Path:
@@ -175,6 +377,9 @@ def load_manifest_unlocked(cwd: Path) -> dict[str, Any]:
         raw = data.decode("utf-8", errors="replace")
     try:
         manifest = json.loads(raw)
+        if isinstance(manifest, dict) and manifest_needs_split(manifest):
+            write_manifest_file(cwd, manifest)
+            manifest = lightweight_manifest(manifest)
         if decode_error is not None:
             backup_corrupt_manifest(path)
             write_manifest_file(cwd, manifest)
@@ -188,7 +393,7 @@ def load_manifest_unlocked(cwd: Path) -> dict[str, Any]:
         if decode_error is not None or raw[end:].strip():
             backup_corrupt_manifest(path)
             write_manifest_file(cwd, manifest)
-            return manifest
+            return lightweight_manifest(manifest) if isinstance(manifest, dict) else manifest
         raise exc
 
 
@@ -325,6 +530,116 @@ def is_workspace_path_inside(path: Path, root: Path) -> bool:
         return False
 
 
+def env_truthy(name: str) -> bool:
+    value = os.environ.get(name, "")
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def env_path_substrings(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [item for item in raw.split(os.pathsep) if item]
+
+
+def has_app_bundle_component(path: Path) -> bool:
+    return any(part.endswith(".app") for part in path.parts)
+
+
+def file_history_excluded_reason(path: Path, cwd: Path) -> str | None:
+    if env_truthy("CODEX_REWIND_DISABLE_EXCLUDES"):
+        return None
+
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        resolved = Path(os.path.abspath(path.expanduser()))
+
+    for needle in env_path_substrings("CODEX_REWIND_EXCLUDE_SUBSTRINGS"):
+        if needle and needle in str(resolved):
+            return f"configured-exclude:{needle}"
+
+    try:
+        if is_inside(resolved, storage_home().resolve()):
+            return "rewind-storage"
+    except OSError:
+        pass
+
+    home_codex = codex_home()
+    for rel in ("rewind", "backups", "tmp"):
+        try:
+            if is_inside(resolved, (home_codex / rel).resolve()):
+                return f"codex-{rel}"
+        except OSError:
+            continue
+
+    if str(resolved).startswith("/Applications/") or has_app_bundle_component(resolved):
+        return "app-bundle"
+
+    for part in resolved.parts:
+        if part in EXCLUDED_FILE_HISTORY_DIR_NAMES:
+            return f"generated-dir:{part}"
+
+    suffix = resolved.suffix.lower()
+    if suffix in EXCLUDED_FILE_HISTORY_SUFFIXES:
+        return f"binary-or-archive:{suffix}"
+
+    return None
+
+
+def file_history_skip_meta(
+    *,
+    cwd: Path,
+    path: Path,
+    key: str,
+    version: int,
+    reason: str,
+    capture_reason: str,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "path": key,
+        "rel": safe_rel(path, cwd),
+        "version": version,
+        "reason": capture_reason,
+        "captured_at": now_iso(),
+        "backup": None,
+        "skipped_reason": reason,
+    }
+    try:
+        if path.exists() and path.is_file():
+            stat = path.stat()
+            meta.update(
+                {
+                    "existed": True,
+                    "kind": "file",
+                    "mode": stat.st_mode,
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "max_file_bytes": MAX_FILE_HISTORY_FILE_BYTES,
+                }
+            )
+        elif path.exists() and path.is_dir():
+            meta.update({"existed": True, "kind": "directory"})
+        else:
+            meta.update({"existed": False, "kind": "missing"})
+    except OSError:
+        meta.update({"existed": False, "kind": "missing"})
+    return meta
+
+
+def file_history_meta_skipped(meta: dict[str, Any]) -> bool:
+    return isinstance(meta.get("skipped_reason"), str) and bool(meta.get("skipped_reason"))
+
+
+def normalize_skipped_file_history_meta(cwd: Path, meta: dict[str, Any], reason: str) -> dict[str, Any]:
+    out = dict(meta)
+    out["backup"] = None
+    out["skipped_reason"] = reason
+    out.setdefault("max_file_bytes", MAX_FILE_HISTORY_FILE_BYTES)
+    path_value = out.get("path")
+    if isinstance(path_value, str):
+        out["rel"] = safe_rel(Path(path_value).expanduser(), cwd)
+    return out
+
+
 def copy_file_backup(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
@@ -371,6 +686,328 @@ def add_file_backup(
         meta.update({"existed": False, "backup": None})
 
     backups[key] = meta
+
+
+def file_history_backup_rel(file_path: Path, version: int) -> str:
+    key = str(file_path.expanduser().resolve())
+    return f"file-history/{short_hash(key, 32)}@v{version}"
+
+
+def file_history_backup_path(cwd: Path, backup_rel: str) -> Path:
+    return project_dir(cwd) / backup_rel
+
+
+def file_history_meta_path(meta: dict[str, Any]) -> Path:
+    return Path(str(meta["path"])).expanduser().resolve()
+
+
+def normalize_file_history_path(file_path: Path) -> tuple[str, Path]:
+    path = file_path.expanduser().resolve()
+    return str(path), path
+
+
+def checkpoint_history_backups(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    backups = checkpoint.get("tracked_file_backups")
+    if isinstance(backups, dict):
+        return backups
+    backups = checkpoint.get("file_backups")
+    if isinstance(backups, dict):
+        checkpoint["tracked_file_backups"] = backups
+        return backups
+    backups = {}
+    checkpoint["tracked_file_backups"] = backups
+    return backups
+
+
+def checkpoint_file_backups_alias(checkpoint: dict[str, Any]) -> None:
+    backups = checkpoint_history_backups(checkpoint)
+    checkpoint["file_backups"] = backups
+
+
+def tracked_file_versions(entry: dict[str, Any]) -> dict[str, Any]:
+    versions = entry.get("versions")
+    if isinstance(versions, dict):
+        return versions
+    versions = {}
+    entry["versions"] = versions
+    return versions
+
+
+def latest_tracked_backup(entry: dict[str, Any]) -> dict[str, Any] | None:
+    versions = tracked_file_versions(entry)
+    latest = entry.get("latest_version")
+    if isinstance(latest, int):
+        meta = versions.get(str(latest))
+        return meta if isinstance(meta, dict) else None
+    numeric_versions: list[int] = []
+    for key in versions:
+        try:
+            numeric_versions.append(int(key))
+        except (TypeError, ValueError):
+            continue
+    if not numeric_versions:
+        return None
+    version = max(numeric_versions)
+    entry["latest_version"] = version
+    meta = versions.get(str(version))
+    return meta if isinstance(meta, dict) else None
+
+
+def first_tracked_backup(manifest: dict[str, Any], key: str) -> dict[str, Any] | None:
+    tracked = manifest.get("tracked_files")
+    if isinstance(tracked, dict):
+        entry = tracked.get(key)
+        if isinstance(entry, dict):
+            versions = tracked_file_versions(entry)
+            numeric_versions: list[int] = []
+            for version_key in versions:
+                try:
+                    numeric_versions.append(int(version_key))
+                except (TypeError, ValueError):
+                    continue
+            if numeric_versions:
+                meta = versions.get(str(min(numeric_versions)))
+                if isinstance(meta, dict):
+                    return meta
+
+    checkpoints = manifest.get("checkpoints")
+    if not isinstance(checkpoints, list):
+        return None
+    ordered = sorted(
+        (item for item in checkpoints if isinstance(item, dict)),
+        key=lambda item: (int(item.get("sequence") or 0), str(item.get("created_at") or "")),
+    )
+    for checkpoint in ordered:
+        backups = checkpoint.get("tracked_file_backups") or checkpoint.get("file_backups")
+        if isinstance(backups, dict):
+            meta = backups.get(key)
+            if isinstance(meta, dict):
+                return meta
+    return None
+
+
+def store_tracked_backup(
+    manifest: dict[str, Any],
+    *,
+    key: str,
+    path: Path,
+    cwd: Path,
+    meta: dict[str, Any],
+) -> None:
+    tracked = manifest.setdefault("tracked_files", {})
+    if not isinstance(tracked, dict):
+        tracked = {}
+        manifest["tracked_files"] = tracked
+    entry = tracked.get(key)
+    if not isinstance(entry, dict):
+        entry = {
+            "path": key,
+            "rel": safe_rel(path, cwd),
+            "versions": {},
+        }
+        tracked[key] = entry
+    versions = tracked_file_versions(entry)
+    version = meta.get("version")
+    if isinstance(version, int):
+        versions[str(version)] = dict(meta)
+        entry["latest_version"] = version
+        entry["latest_backup"] = dict(meta)
+    entry["path"] = key
+    entry["rel"] = safe_rel(path, cwd)
+    entry["updated_at"] = now_iso()
+
+
+def create_file_history_backup(cwd: Path, file_path: Path, *, version: int, reason: str) -> dict[str, Any]:
+    key, path = normalize_file_history_path(file_path)
+    meta: dict[str, Any] = {
+        "path": key,
+        "rel": safe_rel(path, cwd),
+        "version": version,
+        "reason": reason,
+        "captured_at": now_iso(),
+    }
+
+    excluded_reason = file_history_excluded_reason(path, cwd)
+    if excluded_reason is not None:
+        return file_history_skip_meta(
+            cwd=cwd,
+            path=path,
+            key=key,
+            version=version,
+            reason=excluded_reason,
+            capture_reason=reason,
+        )
+
+    if path.exists() and path.is_file():
+        stat = path.stat()
+        if stat.st_size > MAX_FILE_HISTORY_FILE_BYTES:
+            return file_history_skip_meta(
+                cwd=cwd,
+                path=path,
+                key=key,
+                version=version,
+                reason="large-file",
+                capture_reason=reason,
+            )
+        backup_rel = file_history_backup_rel(path, version)
+        backup_path = file_history_backup_path(cwd, backup_rel)
+        copy_file_backup(path, backup_path)
+        meta.update(
+            {
+                "existed": True,
+                "kind": "file",
+                "backup": backup_rel,
+                "mode": stat.st_mode,
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    elif path.exists() and path.is_dir():
+        meta.update({"existed": True, "kind": "directory", "backup": None})
+    else:
+        meta.update({"existed": False, "kind": "missing", "backup": None})
+    return meta
+
+
+def file_matches_history_backup(cwd: Path, path: Path, meta: dict[str, Any]) -> bool:
+    existed = bool(meta.get("existed"))
+    if not existed:
+        return not path.exists()
+    if meta.get("kind") == "directory":
+        return path.exists() and path.is_dir()
+    if file_history_meta_skipped(meta):
+        try:
+            if not path.exists() or not path.is_file():
+                return False
+            stat = path.stat()
+            size = meta.get("size")
+            mtime_ns = meta.get("mtime_ns")
+            if isinstance(size, int) and stat.st_size != size:
+                return False
+            if isinstance(mtime_ns, int) and stat.st_mtime_ns != mtime_ns:
+                return False
+            return True
+        except OSError:
+            return False
+    backup = meta.get("backup")
+    if not isinstance(backup, str) or not backup:
+        return False
+    source = file_history_backup_path(cwd, backup)
+    if not path.is_file() or not source.exists():
+        return False
+    mode = meta.get("mode")
+    try:
+        if isinstance(mode, int) and path.stat().st_mode != mode:
+            return False
+        if path.stat().st_size != source.stat().st_size:
+            return False
+        return path.read_bytes() == source.read_bytes()
+    except OSError:
+        return False
+
+
+def next_file_history_meta(
+    manifest: dict[str, Any],
+    *,
+    cwd: Path,
+    key: str,
+    path: Path,
+    reason: str,
+) -> dict[str, Any]:
+    tracked = manifest.setdefault("tracked_files", {})
+    if not isinstance(tracked, dict):
+        tracked = {}
+        manifest["tracked_files"] = tracked
+    entry = tracked.get(key)
+    if not isinstance(entry, dict):
+        meta = create_file_history_backup(cwd, path, version=1, reason=reason)
+        store_tracked_backup(manifest, key=key, path=path, cwd=cwd, meta=meta)
+        return meta
+
+    latest = latest_tracked_backup(entry)
+    if latest is not None and file_matches_history_backup(cwd, path, latest):
+        return dict(latest)
+    latest_version = entry.get("latest_version")
+    version = latest_version + 1 if isinstance(latest_version, int) else 1
+    meta = create_file_history_backup(cwd, path, version=version, reason=reason)
+    store_tracked_backup(manifest, key=key, path=path, cwd=cwd, meta=meta)
+    return meta
+
+
+def capture_file_history_snapshot(cwd: Path, checkpoint: dict[str, Any], manifest: dict[str, Any]) -> None:
+    tracked = manifest.get("tracked_files")
+    if not isinstance(tracked, dict):
+        tracked = {}
+        manifest["tracked_files"] = tracked
+
+    checkpoint["history_version"] = 2
+    snapshot_backups: dict[str, Any] = {}
+    for key in sorted(tracked):
+        entry = tracked.get(key)
+        if not isinstance(entry, dict):
+            continue
+        path = Path(key).expanduser().resolve()
+        if file_history_excluded_reason(path, cwd) is not None:
+            continue
+        latest = latest_tracked_backup(entry)
+        if latest is None or not file_matches_history_backup(cwd, path, latest):
+            meta = next_file_history_meta(
+                manifest,
+                cwd=cwd,
+                key=key,
+                path=path,
+                reason="snapshot",
+            )
+        else:
+            meta = dict(latest)
+        snapshot_backups[key] = dict(meta)
+
+    checkpoint["tracked_file_backups"] = snapshot_backups
+    checkpoint["file_backups"] = snapshot_backups
+
+
+def track_file_history_edits(cwd: Path, checkpoint: dict[str, Any], paths: list[Path], *, reason: str) -> None:
+    if not paths:
+        return
+    manifest = load_manifest(cwd)
+    manifest["tracked_files"] = load_file_history_state(cwd)
+    checkpoints = manifest.setdefault("checkpoints", [])
+    if not isinstance(checkpoints, list):
+        checkpoints = []
+        manifest["checkpoints"] = checkpoints
+
+    checkpoint_id = checkpoint.get("id")
+    target_checkpoint: dict[str, Any] | None = None
+    for index, existing in enumerate(checkpoints):
+        if isinstance(existing, dict) and existing.get("id") == checkpoint_id:
+            target_checkpoint = load_checkpoint(cwd, existing) or existing
+            checkpoints[index] = target_checkpoint
+            break
+    if target_checkpoint is None:
+        target_checkpoint = checkpoint
+        checkpoints.append(target_checkpoint)
+
+    target_checkpoint["history_version"] = 2
+    snapshot_backups = checkpoint_history_backups(target_checkpoint)
+    for file_path in dedupe_paths(paths):
+        key, path = normalize_file_history_path(file_path)
+        if file_history_excluded_reason(path, cwd) is not None:
+            continue
+        if key in snapshot_backups:
+            continue
+        meta = next_file_history_meta(
+            manifest,
+            cwd=cwd,
+            key=key,
+            path=path,
+            reason=reason,
+        )
+        snapshot_backups[key] = dict(meta)
+
+    checkpoint_file_backups_alias(target_checkpoint)
+    manifest["checkpoints"] = checkpoints[-MAX_FILE_HISTORY_SNAPSHOTS:]
+    manifest["updated_at"] = now_iso()
+    save_manifest(cwd, manifest)
 
 
 def dirty_tracked_files(root: Path) -> set[str]:
@@ -462,6 +1099,58 @@ def workspace_inventory(
     }
 
 
+def remember_workspace_snapshot_skip(skipped_paths: list[str], rel: str) -> None:
+    if len(skipped_paths) < MAX_WORKSPACE_SNAPSHOT_SKIPPED_PATHS:
+        skipped_paths.append(rel)
+
+
+def capture_workspace_file_backups(
+    cwd: Path,
+    checkpoint: dict[str, Any],
+    root: Path,
+    baseline_files: list[str],
+) -> dict[str, Any]:
+    total_bytes = 0
+    captured_files = 0
+    skipped_files = 0
+    skipped_paths: list[str] = []
+
+    for rel in baseline_files:
+        path = root / rel
+        try:
+            if path.is_symlink() or not path.is_file():
+                skipped_files += 1
+                remember_workspace_snapshot_skip(skipped_paths, rel)
+                continue
+            size = path.stat().st_size
+        except OSError:
+            skipped_files += 1
+            remember_workspace_snapshot_skip(skipped_paths, rel)
+            continue
+
+        if size > MAX_WORKSPACE_SNAPSHOT_FILE_BYTES or total_bytes + size > MAX_WORKSPACE_SNAPSHOT_TOTAL_BYTES:
+            skipped_files += 1
+            remember_workspace_snapshot_skip(skipped_paths, rel)
+            continue
+
+        add_file_backup(cwd, checkpoint, path, reason="workspace-baseline", force=True)
+        total_bytes += size
+        captured_files += 1
+
+    info: dict[str, Any] = {
+        "snapshot_version": 1,
+        "captured_files": captured_files,
+        "captured_bytes": total_bytes,
+        "skipped_files": skipped_files,
+        "complete": skipped_files == 0,
+        "max_file_bytes": MAX_WORKSPACE_SNAPSHOT_FILE_BYTES,
+        "max_total_bytes": MAX_WORKSPACE_SNAPSHOT_TOTAL_BYTES,
+    }
+    if skipped_paths:
+        info["skipped_paths"] = skipped_paths
+    return info
+
+
 def capture_workspace_baseline(cwd: Path, checkpoint: dict[str, Any]) -> None:
     root = cwd.resolve()
     excluded_roots = workspace_excluded_roots(root)
@@ -476,6 +1165,12 @@ def capture_workspace_baseline(cwd: Path, checkpoint: dict[str, Any]) -> None:
         "excluded_roots": [str(path) for path in excluded_roots],
         "max_entries": MAX_WORKSPACE_SNAPSHOT_ENTRIES,
     }
+    checkpoint["workspace"]["baseline_file_backups"] = capture_workspace_file_backups(
+        cwd,
+        checkpoint,
+        root,
+        list(inventory["files"]),
+    )
     if not inventory["complete"]:
         checkpoint["workspace"]["baseline_truncated_at"] = inventory.get("truncated_at")
 
@@ -557,6 +1252,7 @@ def make_checkpoint(
             same_turn = checkpoint.get("turn_id") == turn_id
             same_thread = not thread_id or checkpoint.get("thread_id") in (None, thread_id)
             if same_turn and same_thread:
+                checkpoint = load_checkpoint(cwd, checkpoint) or checkpoint
                 if thread_id and not checkpoint.get("thread_id"):
                     checkpoint["thread_id"] = thread_id
                     update_checkpoint(cwd, checkpoint)
@@ -564,8 +1260,11 @@ def make_checkpoint(
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     suffix = short_hash(f"{thread_id or ''}:{turn_id or ''}:{prompt}:{time.time()}", 8)
+    sequence = int(manifest.get("snapshot_sequence") or len(manifest.get("checkpoints", []))) + 1
     checkpoint = {
         "id": f"{stamp}-{suffix}",
+        "sequence": sequence,
+        "history_version": 2,
         "created_at": now_iso(),
         "cwd": str(cwd),
         "thread_id": thread_id,
@@ -573,11 +1272,14 @@ def make_checkpoint(
         "user_message_id": user_message_id,
         "source": source,
         "prompt_preview": prompt.strip().replace("\n", " ")[:240],
+        "tracked_file_backups": {},
         "file_backups": {},
     }
-    capture_git_baseline(cwd, checkpoint)
+    manifest["tracked_files"] = load_file_history_state(cwd)
+    capture_file_history_snapshot(cwd, checkpoint, manifest)
     manifest.setdefault("checkpoints", []).append(checkpoint)
-    manifest["checkpoints"] = manifest["checkpoints"][-100:]
+    manifest["checkpoints"] = manifest["checkpoints"][-MAX_FILE_HISTORY_SNAPSHOTS:]
+    manifest["snapshot_sequence"] = sequence
     manifest["updated_at"] = now_iso()
     save_manifest(cwd, manifest)
     return checkpoint
@@ -594,12 +1296,13 @@ def current_checkpoint(cwd: Path, payload: dict[str, Any] | None = None) -> dict
             same_turn = checkpoint.get("turn_id") == turn_id
             same_thread = not thread_id or checkpoint.get("thread_id") in (None, thread_id)
             if same_turn and same_thread:
+                checkpoint = load_checkpoint(cwd, checkpoint) or checkpoint
                 if thread_id and not checkpoint.get("thread_id"):
                     checkpoint["thread_id"] = thread_id
                     update_checkpoint(cwd, checkpoint)
                 return checkpoint
     if checkpoints:
-        return checkpoints[-1]
+        return load_checkpoint(cwd, checkpoints[-1]) or checkpoints[-1]
     return make_checkpoint(cwd, source="auto")
 
 
@@ -613,7 +1316,7 @@ def update_checkpoint(cwd: Path, checkpoint: dict[str, Any]) -> None:
             save_manifest(cwd, manifest)
             return
     checkpoints.append(checkpoint)
-    manifest["checkpoints"] = checkpoints[-100:]
+    manifest["checkpoints"] = checkpoints[-MAX_FILE_HISTORY_SNAPSHOTS:]
     manifest["updated_at"] = now_iso()
     save_manifest(cwd, manifest)
 
@@ -706,6 +1409,38 @@ def extract_shell_paths(command: str, cwd: Path) -> list[Path]:
     return paths
 
 
+def payload_tool_name(payload: dict[str, Any]) -> str:
+    return first_string(
+        payload.get("tool_name"),
+        payload.get("toolName"),
+        payload.get("name"),
+        payload.get("tool"),
+    ) or ""
+
+
+def is_bash_tool_payload(payload: dict[str, Any], tool_input: dict[str, Any]) -> bool:
+    name = payload_tool_name(payload).lower()
+    if name in {"bash", "shell", "shell_command", "functions.shell_command"}:
+        return True
+    return isinstance(tool_input.get("command"), str) and not any(
+        isinstance(tool_input.get(key), str)
+        for key in ("path", "file_path", "filepath", "notebook_path", "target_file")
+    )
+
+
+def extract_simulated_sed_paths(tool_input: dict[str, Any], cwd: Path) -> list[Path]:
+    simulated = tool_input.get("_simulatedSedEdit")
+    if not isinstance(simulated, dict):
+        simulated = tool_input.get("simulatedSedEdit")
+    if not isinstance(simulated, dict):
+        return []
+    file_path = first_string(simulated.get("filePath"), simulated.get("file_path"))
+    if not file_path:
+        return []
+    path = Path(file_path).expanduser()
+    return [path.resolve() if path.is_absolute() else (cwd / path).resolve()]
+
+
 def extract_tool_paths(payload: dict[str, Any], cwd: Path) -> list[Path]:
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -715,6 +1450,9 @@ def extract_tool_paths(payload: dict[str, Any], cwd: Path) -> list[Path]:
     workdir = tool_input.get("workdir")
     if isinstance(workdir, str) and workdir:
         tool_cwd = canonical_cwd(workdir)
+
+    if is_bash_tool_payload(payload, tool_input):
+        return dedupe_paths(extract_simulated_sed_paths(tool_input, tool_cwd))
 
     candidates: list[str] = []
     for key in (
@@ -741,9 +1479,6 @@ def extract_tool_paths(payload: dict[str, Any], cwd: Path) -> list[Path]:
 
     paths = [(tool_cwd / item).resolve() if not Path(item).is_absolute() else Path(item).resolve() for item in candidates]
     paths.extend(extract_patch_paths(patch_text, tool_cwd))
-    command = tool_input.get("command")
-    if isinstance(command, str):
-        paths.extend(extract_shell_paths(command, tool_cwd))
     return dedupe_paths(paths)
 
 
@@ -788,6 +1523,7 @@ def hook_user_prompt(args: argparse.Namespace) -> int:
         user_message_id=identity.get("user_message_id"),
         source="UserPromptSubmit",
     )
+    maybe_cleanup_old_rewind_storage()
     return 0
 
 
@@ -795,9 +1531,7 @@ def hook_pre_tool(args: argparse.Namespace) -> int:
     payload = read_stdin_json()
     cwd = cwd_from_payload(payload, args.cwd)
     checkpoint = current_checkpoint(cwd, payload)
-    for path in extract_tool_paths(payload, cwd):
-        add_file_backup(cwd, checkpoint, path, reason="pre-tool")
-    update_checkpoint(cwd, checkpoint)
+    track_file_history_edits(cwd, checkpoint, extract_tool_paths(payload, cwd), reason="pre-tool")
     return 0
 
 
@@ -807,15 +1541,16 @@ def resolve_checkpoint(cwd: Path, selector: str | None) -> dict[str, Any]:
     if not checkpoints:
         raise SystemExit("No rewind checkpoints for this cwd.")
     if not selector or selector == "latest":
-        return checkpoints[-1]
+        return load_checkpoint(cwd, checkpoints[-1]) or checkpoints[-1]
     if selector.isdigit():
         index = int(selector)
         if index < 1 or index > len(checkpoints):
             raise SystemExit(f"Checkpoint index out of range: {selector}")
-        return checkpoints[index - 1]
+        checkpoint = checkpoints[index - 1]
+        return load_checkpoint(cwd, checkpoint) or checkpoint
     matches = [item for item in checkpoints if item.get("id", "").startswith(selector)]
     if len(matches) == 1:
-        return matches[0]
+        return load_checkpoint(cwd, matches[0]) or matches[0]
     if not matches:
         raise SystemExit(f"No checkpoint matches: {selector}")
     raise SystemExit(f"Ambiguous checkpoint prefix: {selector}")
@@ -914,6 +1649,7 @@ def one_line_preview(text: str, width: int = 120) -> str:
 
 
 MARKDOWN_LINK_RE = re.compile(r"!?\[([^\]]*)\]\((?:\\.|[^)])*\)")
+CODE_TRAILER_RE = re.compile(r"(?:^|\s+)code:\S+")
 
 
 def markdown_display_text(text: str) -> str:
@@ -930,9 +1666,15 @@ def markdown_display_text(text: str) -> str:
     return previous
 
 
+def strip_code_trailers(text: str) -> str:
+    return CODE_TRAILER_RE.sub("", text)
+
+
 def target_display_text(message: dict[str, Any]) -> str:
     text = message.get("text") or message.get("preview") or ""
-    return " ".join(markdown_display_text(str(text)).strip().split())
+    display = markdown_display_text(str(text))
+    display = strip_code_trailers(display)
+    return " ".join(display.strip().split())
 
 
 def parse_session_user_messages(path: Path, *, include_rewind_commands: bool = False) -> list[dict[str, Any]]:
@@ -1046,6 +1788,54 @@ def manifest_checkpoints(cwd: Path) -> list[dict[str, Any]]:
     return list(load_manifest(cwd).get("checkpoints", []))
 
 
+class CheckpointIndex:
+    def __init__(self, checkpoints: list[dict[str, Any]]) -> None:
+        self.checkpoints = checkpoints
+        self.by_turn: dict[str, dict[str, Any]] = {}
+        for checkpoint in checkpoints:
+            turn_id = checkpoint.get("turn_id")
+            if isinstance(turn_id, str) and turn_id:
+                self.by_turn[turn_id] = checkpoint
+
+    def find(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        turn_id = message.get("turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            checkpoint = self.by_turn.get(turn_id)
+            if checkpoint is not None:
+                return checkpoint
+
+        preview = message.get("preview") or ""
+        if preview:
+            preview_prefix = str(preview)[:80]
+            for checkpoint in reversed(self.checkpoints):
+                checkpoint_preview = checkpoint.get("prompt_preview") or ""
+                if checkpoint_preview and (
+                    checkpoint_preview.startswith(preview_prefix) or preview.startswith(str(checkpoint_preview)[:80])
+                ):
+                    return checkpoint
+
+        timestamp = parse_event_time(message.get("timestamp"))
+        if timestamp is None:
+            return None
+
+        candidates: list[tuple[float, dict[str, Any]]] = []
+        for checkpoint in self.checkpoints:
+            created_at = parse_event_time(checkpoint.get("created_at"))
+            if created_at is None:
+                continue
+            # UserPromptSubmit checkpoints are normally created seconds after the JSONL user event.
+            delta = created_at - timestamp
+            if -60 <= delta <= 300:
+                candidates.append((abs(delta), checkpoint))
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda item: item[0])[0][1]
+
+
+def checkpoint_index(cwd: Path) -> CheckpointIndex:
+    return CheckpointIndex(manifest_checkpoints(cwd))
+
+
 def parse_event_time(value: Any) -> float | None:
     if not isinstance(value, str) or not value:
         return None
@@ -1056,38 +1846,14 @@ def parse_event_time(value: Any) -> float | None:
 
 
 def find_checkpoint_for_message(cwd: Path, message: dict[str, Any]) -> dict[str, Any] | None:
-    checkpoints = manifest_checkpoints(cwd)
-    turn_id = message.get("turn_id")
-    if turn_id:
-        for checkpoint in reversed(checkpoints):
-            if checkpoint.get("turn_id") == turn_id:
-                return checkpoint
+    return checkpoint_index(cwd).find(message)
 
-    preview = message.get("preview") or ""
-    if preview:
-        for checkpoint in reversed(checkpoints):
-            checkpoint_preview = checkpoint.get("prompt_preview") or ""
-            if checkpoint_preview and (
-                checkpoint_preview.startswith(preview[:80]) or preview.startswith(checkpoint_preview[:80])
-            ):
-                return checkpoint
 
-    timestamp = parse_event_time(message.get("timestamp"))
-    if timestamp is None:
-        return None
-
-    candidates: list[tuple[float, dict[str, Any]]] = []
-    for checkpoint in checkpoints:
-        created_at = parse_event_time(checkpoint.get("created_at"))
-        if created_at is None:
-            continue
-        # UserPromptSubmit checkpoints are normally created seconds after the JSONL user event.
-        delta = created_at - timestamp
-        if -60 <= delta <= 300:
-            candidates.append((abs(created_at - timestamp), checkpoint))
-    if not candidates:
-        return None
-    return sorted(candidates, key=lambda item: item[0])[0][1]
+def annotate_checkpoint_ids(cwd: Path, messages: list[dict[str, Any]]) -> None:
+    index = checkpoint_index(cwd)
+    for message in messages:
+        checkpoint = index.find(message)
+        message["checkpoint_id"] = checkpoint.get("id") if checkpoint else None
 
 
 def select_message(messages: list[dict[str, Any]], selector: str | None) -> dict[str, Any]:
@@ -1211,12 +1977,9 @@ def rollout_patch_file_actions(
 
 
 def file_actions(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> list[str]:
-    actions = restore_git_baseline(cwd, checkpoint, dry_run=dry_run)
-    for meta in (checkpoint.get("file_backups") or {}).values():
-        if isinstance(meta, dict):
-            actions.append(restore_backup(cwd, checkpoint, meta, dry_run=dry_run))
-    actions.extend(restore_workspace_baseline(cwd, checkpoint, dry_run=dry_run))
-    return actions
+    if checkpoint_uses_file_history(checkpoint):
+        return restore_file_history_snapshot(cwd, checkpoint, dry_run=dry_run)
+    return legacy_file_actions(cwd, checkpoint, dry_run=dry_run)
 
 
 def checkpoint_has_git_root(checkpoint: dict[str, Any] | None) -> bool:
@@ -1234,13 +1997,14 @@ def code_rewind_actions(
     dry_run: bool,
 ) -> tuple[str | None, list[str]]:
     checkpoint = find_checkpoint_for_message(cwd, target)
+    if checkpoint is not None:
+        checkpoint = load_checkpoint(cwd, checkpoint) or checkpoint
     actions: list[str] = []
     checkpoint_id = str(checkpoint["id"]) if checkpoint is not None and checkpoint.get("id") else None
 
     if checkpoint is not None:
         actions.extend(file_actions(cwd, checkpoint, dry_run=dry_run))
-
-    if checkpoint is None or not checkpoint_has_git_root(checkpoint):
+    else:
         actions.extend(rollout_patch_file_actions(thread=thread, target=target, cwd=cwd, dry_run=dry_run))
 
     if checkpoint is None and not actions:
@@ -1264,9 +2028,7 @@ def resolve_thread_and_messages(args: argparse.Namespace) -> tuple[dict[str, Any
 
 def enriched_targets(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]], Path]:
     thread, messages, cwd = resolve_thread_and_messages(args)
-    for message in messages:
-        checkpoint = find_checkpoint_for_message(cwd, message)
-        message["checkpoint_id"] = checkpoint.get("id") if checkpoint else None
+    annotate_checkpoint_ids(cwd, messages)
     return thread, messages, cwd
 
 
@@ -1631,7 +2393,7 @@ def run_appkit_gui(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
     if binary is None:
         return None
 
-    input_path = Path(f"/tmp/codex-rewind-appkit-{os.getpid()}-{int(time.time() * 1000)}.json")
+    input_path = Path(tempfile.gettempdir()) / f"codex-rewind-appkit-{os.getpid()}-{int(time.time() * 1000)}.json"
     payload = {
         "targets": [
             {
@@ -2144,9 +2906,7 @@ def run_rewind_gui_from_payload(payload: dict[str, Any], args: argparse.Namespac
             rollout_path=transcript_path,
         )
         messages = parse_session_user_messages(Path(thread["rollout_path"]).expanduser())
-        for message in messages:
-            checkpoint = find_checkpoint_for_message(cwd, message)
-            message["checkpoint_id"] = checkpoint.get("id") if checkpoint else None
+        annotate_checkpoint_ids(cwd, messages)
 
         if os.environ.get("CODEX_REWIND_GUI_AUTODISMISS"):
             return {"status": "dismissed"}
@@ -2221,15 +2981,16 @@ def list_checkpoints(args: argparse.Namespace) -> int:
         print(f"No rewind checkpoints for {cwd}")
         return 0
     print(f"Rewind checkpoints for {cwd}:")
+    tracked_count = len(load_file_history_state(cwd))
     for index, checkpoint in enumerate(checkpoints, start=1):
         prompt = checkpoint.get("prompt_preview") or ""
-        git_info = checkpoint.get("git") or {}
-        dirty = len(git_info.get("baseline_dirty") or [])
-        untracked = len(git_info.get("baseline_untracked") or [])
-        backups = len(checkpoint.get("file_backups") or {})
+        backups = checkpoint.get("tracked_file_count")
+        if not isinstance(backups, int):
+            backups = len(checkpoint_history_backups(checkpoint))
+        tracked = tracked_count if checkpoint_uses_file_history(checkpoint) else 0
         print(
             f"{index:>3}. {checkpoint['id']}  {checkpoint.get('created_at')}  "
-            f"backups={backups} dirty={dirty} untracked={untracked}  {prompt}"
+            f"backups={backups} tracked={tracked}  {prompt}"
         )
     return 0
 
@@ -2240,6 +3001,72 @@ def git_blob(root: Path, rel: str) -> bytes | None:
         return result.stdout
     except subprocess.CalledProcessError:
         return None
+
+
+def restore_file_history_backup(cwd: Path, meta: dict[str, Any], *, dry_run: bool) -> str | None:
+    path = file_history_meta_path(meta)
+    if not meta.get("existed"):
+        if not path.exists():
+            return None
+        if not dry_run:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            if is_inside(path.parent, cwd):
+                remove_empty_parents(path.parent, cwd)
+        return f"delete {path}"
+
+    if meta.get("kind") == "directory":
+        return None if path.exists() and path.is_dir() else f"warn-directory-history-unsupported {path}"
+
+    if file_history_meta_skipped(meta):
+        return f"warn-skipped-file-history {meta.get('skipped_reason')} {path}"
+
+    backup = meta.get("backup")
+    if not isinstance(backup, str) or not backup:
+        return f"warn-missing-backup {path}"
+    source = file_history_backup_path(cwd, backup)
+    if not source.exists():
+        return f"warn-missing-backup {path}"
+    if file_matches_history_backup(cwd, path, meta):
+        return None
+    if not dry_run:
+        mode = meta.get("mode")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, path)
+        if isinstance(mode, int):
+            try:
+                os.chmod(path, mode)
+            except OSError:
+                pass
+    return f"restore {path}"
+
+
+def restore_file_history_snapshot(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> list[str]:
+    manifest = load_manifest(cwd)
+    manifest["tracked_files"] = load_file_history_state(cwd)
+    target_backups = checkpoint.get("tracked_file_backups")
+    if not isinstance(target_backups, dict):
+        target_backups = checkpoint.get("file_backups")
+    if not isinstance(target_backups, dict):
+        target_backups = {}
+
+    tracked = manifest.get("tracked_files")
+    tracked_keys = set(tracked.keys()) if isinstance(tracked, dict) else set()
+    keys = tracked_keys | set(target_backups.keys())
+    actions: list[str] = []
+    for key in sorted(keys, key=lambda item: (item.count("/"), item), reverse=True):
+        meta = target_backups.get(key)
+        if not isinstance(meta, dict):
+            meta = first_tracked_backup(manifest, key)
+        if not isinstance(meta, dict):
+            actions.append(f"warn-no-file-history {key}")
+            continue
+        action = restore_file_history_backup(cwd, meta, dry_run=dry_run)
+        if action:
+            actions.append(action)
+    return actions
 
 
 def restore_backup(cwd: Path, checkpoint: dict[str, Any], meta: dict[str, Any], *, dry_run: bool) -> str:
@@ -2261,15 +3088,37 @@ def restore_backup(cwd: Path, checkpoint: dict[str, Any], meta: dict[str, Any], 
     if not source.exists():
         return f"skip missing-backup {path}"
     if not dry_run:
+        mode = meta.get("mode")
+        try:
+            same_content = path.is_file() and path.read_bytes() == source.read_bytes()
+            same_mode = not isinstance(mode, int) or path.stat().st_mode == mode
+            if same_content and same_mode:
+                return f"skip unchanged {path}"
+        except OSError:
+            pass
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, path)
-        mode = meta.get("mode")
         if isinstance(mode, int):
             try:
                 os.chmod(path, mode)
             except OSError:
                 pass
     return f"restore {path}"
+
+
+def checkpoint_uses_file_history(checkpoint: dict[str, Any]) -> bool:
+    if checkpoint.get("history_version") == 2:
+        return True
+    return isinstance(checkpoint.get("tracked_file_backups"), dict)
+
+
+def legacy_file_actions(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> list[str]:
+    actions: list[str] = []
+    for meta in (checkpoint.get("file_backups") or {}).values():
+        if isinstance(meta, dict):
+            actions.append(restore_backup(cwd, checkpoint, meta, dry_run=dry_run))
+    actions.extend(restore_workspace_baseline(cwd, checkpoint, dry_run=dry_run))
+    return actions
 
 
 def checkpoint_bytes(cwd: Path, checkpoint: dict[str, Any], rel: str | None) -> bytes:
@@ -2365,12 +3214,25 @@ def remove_new_workspace_path(path: Path, root: Path, baseline_dirs: set[str]) -
         pass
 
 
+def workspace_content_snapshot_warnings(workspace: dict[str, Any], root: Path) -> list[str]:
+    info = workspace.get("baseline_file_backups")
+    if not isinstance(info, dict) or info.get("complete", True):
+        return []
+    skipped = info.get("skipped_files")
+    suffix = f" skipped={skipped}" if isinstance(skipped, int) else ""
+    return [f"warn-workspace-content-snapshot-incomplete {root}{suffix}"]
+
+
 def restore_workspace_baseline(cwd: Path, checkpoint: dict[str, Any], *, dry_run: bool) -> list[str]:
     workspace = checkpoint.get("workspace")
     if not isinstance(workspace, dict):
         return []
     if not workspace.get("baseline_complete", True):
-        return [f"warn-workspace-baseline-incomplete {workspace.get('root') or cwd}"]
+        root = Path(str(workspace.get("root") or cwd)).expanduser()
+        return [
+            f"warn-workspace-baseline-incomplete {workspace.get('root') or cwd}",
+            *workspace_content_snapshot_warnings(workspace, root),
+        ]
 
     root = Path(str(workspace.get("root") or cwd)).expanduser().resolve()
     if not root.exists():
@@ -2390,7 +3252,7 @@ def restore_workspace_baseline(cwd: Path, checkpoint: dict[str, Any], *, dry_run
     current_files = set(current.get("files") or [])
     current_dirs = set(current.get("dirs") or [])
 
-    actions: list[str] = []
+    actions: list[str] = workspace_content_snapshot_warnings(workspace, root)
     for rel in sorted(current_files - baseline_files, key=lambda item: (item.count("/"), item), reverse=True):
         path = root / rel
         actions.append(f"delete-new-workspace {path}")
@@ -2606,6 +3468,468 @@ def gui_command(args: argparse.Namespace) -> int:
     return 0 if result.get("status") in {"applied", "dismissed", "selected"} else 1
 
 
+def parse_iso_timestamp(value: Any) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def path_file_size(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        if path.is_dir():
+            return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+    except OSError:
+        return 0
+    return 0
+
+
+def iter_rewind_project_dirs() -> list[Path]:
+    home = storage_home()
+    if not home.exists():
+        return []
+    return sorted(
+        path
+        for path in home.iterdir()
+        if path.is_dir() and PROJECT_DIR_RE.match(path.name)
+    )
+
+
+def project_manifest_path(project: Path) -> Path:
+    return project / "manifest.json"
+
+
+def load_project_manifest(project: Path) -> dict[str, Any] | None:
+    path = project_manifest_path(project)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def project_activity_time(project: Path, manifest: dict[str, Any] | None) -> float:
+    if manifest is not None:
+        for key in ("updated_at", "created_at"):
+            timestamp = parse_iso_timestamp(manifest.get(key))
+            if timestamp is not None:
+                return timestamp
+    try:
+        return project.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def checkpoint_backup_metas(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    backups = checkpoint.get("tracked_file_backups")
+    if isinstance(backups, dict):
+        return backups
+    backups = checkpoint.get("file_backups")
+    if isinstance(backups, dict):
+        return backups
+    return {}
+
+
+def meta_backup_rel(meta: dict[str, Any]) -> str | None:
+    backup = meta.get("backup")
+    return backup if isinstance(backup, str) and backup else None
+
+
+def meta_size_from_backup(cwd: Path, meta: dict[str, Any]) -> int | None:
+    size = meta.get("size")
+    if isinstance(size, int):
+        return size
+    backup = meta_backup_rel(meta)
+    if not backup:
+        return None
+    path = file_history_backup_path(cwd, backup)
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def policy_filtered_meta(cwd: Path, key: str, meta: dict[str, Any]) -> dict[str, Any] | None:
+    path = Path(key).expanduser()
+    excluded = file_history_excluded_reason(path, cwd)
+    if excluded is not None:
+        return None
+    size = meta_size_from_backup(cwd, meta)
+    if isinstance(size, int) and size > MAX_FILE_HISTORY_FILE_BYTES:
+        return normalize_skipped_file_history_meta(cwd, meta, "large-file")
+    return dict(meta)
+
+
+def sanitize_checkpoint_backups(cwd: Path, checkpoint: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    backups = checkpoint_backup_metas(checkpoint)
+    changed = False
+    sanitized: dict[str, Any] = {}
+    for key, value in backups.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            changed = True
+            continue
+        meta = policy_filtered_meta(cwd, key, value)
+        if meta is None:
+            changed = True
+            continue
+        if meta != value:
+            changed = True
+        sanitized[key] = meta
+    if changed:
+        checkpoint["tracked_file_backups"] = sanitized
+        checkpoint["file_backups"] = sanitized
+    return sanitized, changed
+
+
+def retained_checkpoint_summaries(
+    checkpoints: list[dict[str, Any]],
+    *,
+    max_age_days: int | None,
+) -> list[dict[str, Any]]:
+    retained = list(checkpoints[-MAX_FILE_HISTORY_SNAPSHOTS:])
+    if max_age_days is None:
+        return retained
+    cutoff = time.time() - max_age_days * 24 * 60 * 60
+    return [
+        checkpoint
+        for checkpoint in retained
+        if (parse_iso_timestamp(checkpoint.get("created_at")) or 0.0) >= cutoff
+    ]
+
+
+def numeric_version_keys(versions: dict[str, Any]) -> list[int]:
+    out: list[int] = []
+    for key in versions:
+        try:
+            out.append(int(key))
+        except (TypeError, ValueError):
+            continue
+    return sorted(out)
+
+
+def rewrite_tracked_files_for_gc(
+    cwd: Path,
+    tracked: dict[str, Any],
+    retained_versions: dict[str, set[int]],
+) -> tuple[dict[str, Any], set[str], int]:
+    new_tracked: dict[str, Any] = {}
+    live_backup_refs: set[str] = set()
+    removed_versions = 0
+
+    for key, entry in tracked.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            removed_versions += 1
+            continue
+        if file_history_excluded_reason(Path(key).expanduser(), cwd) is not None:
+            versions = entry.get("versions")
+            removed_versions += len(versions) if isinstance(versions, dict) else 1
+            continue
+
+        versions = entry.get("versions")
+        if not isinstance(versions, dict):
+            removed_versions += 1
+            continue
+
+        numeric = numeric_version_keys(versions)
+        keep_versions: set[int] = set(retained_versions.get(key, set()))
+        if numeric:
+            first = numeric[0]
+            latest = numeric[-1]
+            first_meta = versions.get(str(first))
+            # Keep a missing first-version marker so files created after the
+            # rewind target can still be deleted without retaining large bytes.
+            if isinstance(first_meta, dict) and first_meta.get("backup") is None:
+                keep_versions.add(first)
+            keep_versions.add(latest)
+
+        new_versions: dict[str, Any] = {}
+        for version_key, value in versions.items():
+            try:
+                version = int(version_key)
+            except (TypeError, ValueError):
+                removed_versions += 1
+                continue
+            if version not in keep_versions:
+                removed_versions += 1
+                continue
+            if not isinstance(value, dict):
+                removed_versions += 1
+                continue
+            meta = policy_filtered_meta(cwd, key, value)
+            if meta is None:
+                removed_versions += 1
+                continue
+            backup = meta_backup_rel(meta)
+            if backup:
+                live_backup_refs.add(backup)
+            new_versions[str(version)] = meta
+
+        if not new_versions:
+            continue
+
+        latest_version = max(int(key) for key in new_versions)
+        new_entry = dict(entry)
+        new_entry["path"] = key
+        new_entry["rel"] = safe_rel(Path(key).expanduser(), cwd)
+        new_entry["versions"] = new_versions
+        new_entry["latest_version"] = latest_version
+        new_entry["latest_backup"] = dict(new_versions[str(latest_version)])
+        new_entry["updated_at"] = now_iso()
+        new_tracked[key] = new_entry
+
+    return new_tracked, live_backup_refs, removed_versions
+
+
+def gc_project_dir(project: Path, *, dry_run: bool, max_age_days: int | None = None) -> dict[str, Any]:
+    manifest = load_project_manifest(project)
+    if manifest is None:
+        return {
+            "project": str(project),
+            "cwd": None,
+            "removed_checkpoints": 0,
+            "removed_backups": 0,
+            "removed_bytes": 0,
+            "updated": False,
+            "skipped": "missing-manifest",
+        }
+
+    raw_cwd = manifest.get("cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        return {
+            "project": str(project),
+            "cwd": None,
+            "removed_checkpoints": 0,
+            "removed_backups": 0,
+            "removed_bytes": 0,
+            "updated": False,
+            "skipped": "missing-cwd",
+        }
+    cwd = Path(raw_cwd).expanduser()
+
+    with manifest_lock(cwd):
+        manifest = load_manifest_unlocked(cwd)
+        checkpoints = [
+            checkpoint
+            for checkpoint in manifest.get("checkpoints", [])
+            if isinstance(checkpoint, dict)
+        ]
+        retained_summaries = retained_checkpoint_summaries(checkpoints, max_age_days=max_age_days)
+        retained_ids = {
+            checkpoint.get("id")
+            for checkpoint in retained_summaries
+            if isinstance(checkpoint.get("id"), str)
+        }
+
+        retained_full: list[dict[str, Any]] = []
+        retained_versions: dict[str, set[int]] = {}
+        live_backup_refs: set[str] = set()
+        changed = len(retained_summaries) != len(checkpoints)
+
+        for summary in retained_summaries:
+            checkpoint = load_checkpoint(cwd, summary) or summary
+            backups, backup_changed = sanitize_checkpoint_backups(cwd, checkpoint)
+            changed = changed or backup_changed
+            for key, meta in backups.items():
+                if not isinstance(meta, dict):
+                    continue
+                version = meta.get("version")
+                if isinstance(version, int):
+                    retained_versions.setdefault(key, set()).add(version)
+                backup = meta_backup_rel(meta)
+                if backup:
+                    live_backup_refs.add(backup)
+            retained_full.append(checkpoint)
+
+        tracked = load_file_history_state(cwd)
+        new_tracked, state_backup_refs, removed_versions = rewrite_tracked_files_for_gc(
+            cwd,
+            tracked,
+            retained_versions,
+        )
+        live_backup_refs.update(state_backup_refs)
+        if new_tracked != tracked:
+            changed = True
+
+        checkpoints_root = project / "checkpoints"
+        removed_checkpoints = 0
+        removed_bytes = 0
+        if checkpoints_root.exists():
+            for checkpoint_dir_path in checkpoints_root.iterdir():
+                if not checkpoint_dir_path.is_dir():
+                    continue
+                if checkpoint_dir_path.name in retained_ids:
+                    continue
+                removed_checkpoints += 1
+                removed_bytes += path_file_size(checkpoint_dir_path)
+                if not dry_run:
+                    shutil.rmtree(checkpoint_dir_path, ignore_errors=True)
+
+        removed_backups = 0
+        history_root = project / "file-history"
+        if history_root.exists():
+            for backup_path in history_root.iterdir():
+                if not backup_path.is_file():
+                    continue
+                rel = f"file-history/{backup_path.name}"
+                if rel in live_backup_refs:
+                    continue
+                removed_backups += 1
+                try:
+                    removed_bytes += backup_path.stat().st_size
+                except OSError:
+                    pass
+                if not dry_run:
+                    try:
+                        backup_path.unlink()
+                    except FileNotFoundError:
+                        pass
+
+        if changed and not dry_run:
+            manifest["tracked_files"] = new_tracked
+            manifest["checkpoints"] = retained_full
+            manifest["updated_at"] = now_iso()
+            write_manifest_file(cwd, manifest)
+
+        return {
+            "project": str(project),
+            "cwd": str(cwd),
+            "removed_checkpoints": removed_checkpoints,
+            "removed_backups": removed_backups,
+            "removed_versions": removed_versions,
+            "removed_bytes": removed_bytes,
+            "updated": changed,
+            "retained_checkpoints": len(retained_full),
+            "retained_tracked_files": len(new_tracked),
+        }
+
+
+def cleanup_old_rewind_storage(*, dry_run: bool, max_age_days: int = REWIND_CLEANUP_DAYS) -> dict[str, Any]:
+    cutoff = time.time() - max_age_days * 24 * 60 * 60
+    reports: list[dict[str, Any]] = []
+    removed_projects = 0
+    removed_bytes = 0
+
+    for project in iter_rewind_project_dirs():
+        manifest = load_project_manifest(project)
+        activity = project_activity_time(project, manifest)
+        if activity and activity < cutoff:
+            removed_projects += 1
+            removed_bytes += path_file_size(project)
+            reports.append(
+                {
+                    "project": str(project),
+                    "cwd": manifest.get("cwd") if isinstance(manifest, dict) else None,
+                    "removed_project": True,
+                    "removed_bytes": path_file_size(project),
+                }
+            )
+            if not dry_run:
+                shutil.rmtree(project, ignore_errors=True)
+            continue
+        reports.append(gc_project_dir(project, dry_run=dry_run, max_age_days=max_age_days))
+
+    return {
+        "max_age_days": max_age_days,
+        "removed_projects": removed_projects,
+        "removed_project_bytes": removed_bytes,
+        "projects": reports,
+    }
+
+
+def cleanup_marker_path() -> Path:
+    return storage_home() / ".cleanup-marker"
+
+
+def cleanup_lock_path() -> Path:
+    return storage_home() / ".cleanup.lock"
+
+
+def maybe_cleanup_old_rewind_storage() -> None:
+    if env_truthy("CODEX_REWIND_DISABLE_AUTO_GC"):
+        return
+    marker = cleanup_marker_path()
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < REWIND_CLEANUP_INTERVAL_SECONDS:
+            return
+    except OSError:
+        return
+
+    lock = cleanup_lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        with lock.open("a+", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            if marker.exists() and time.time() - marker.stat().st_mtime < REWIND_CLEANUP_INTERVAL_SECONDS:
+                return
+            cleanup_old_rewind_storage(dry_run=False, max_age_days=REWIND_CLEANUP_DAYS)
+            marker.write_text(now_iso() + "\n", encoding="utf-8")
+    except Exception:
+        # Rewind hooks must never fail user prompts because housekeeping failed.
+        return
+
+
+def format_bytes(value: int) -> str:
+    units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    amount = float(value)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f"{amount:.1f}{unit}" if unit != "B" else f"{int(amount)}B"
+        amount /= 1024
+    return f"{value}B"
+
+
+def gc_command(args: argparse.Namespace) -> int:
+    dry_run = not bool(args.yes)
+    max_age_days = args.max_age_days
+    if args.all and max_age_days is None:
+        max_age_days = REWIND_CLEANUP_DAYS
+    if args.all:
+        report = cleanup_old_rewind_storage(dry_run=dry_run, max_age_days=max_age_days)
+        reports = report["projects"]
+    else:
+        cwd = canonical_cwd(args.cwd)
+        reports = [gc_project_dir(project_dir(cwd), dry_run=dry_run, max_age_days=max_age_days)]
+
+    mode = "DRY-RUN" if dry_run else "APPLIED"
+    print(f"{mode} rewind gc")
+    total_bytes = 0
+    total_backups = 0
+    total_checkpoints = 0
+    for report in reports:
+        if report.get("removed_project"):
+            size = int(report.get("removed_bytes") or 0)
+            total_bytes += size
+            print(f"- remove-project {report.get('cwd') or report['project']} bytes={format_bytes(size)}")
+            continue
+        size = int(report.get("removed_bytes") or 0)
+        backups = int(report.get("removed_backups") or 0)
+        checkpoints = int(report.get("removed_checkpoints") or 0)
+        total_bytes += size
+        total_backups += backups
+        total_checkpoints += checkpoints
+        print(
+            f"- {report.get('cwd') or report['project']} "
+            f"remove_backups={backups} remove_checkpoints={checkpoints} "
+            f"remove_bytes={format_bytes(size)} retained_checkpoints={report.get('retained_checkpoints', '-')}"
+        )
+    print(
+        f"total: remove_backups={total_backups} remove_checkpoints={total_checkpoints} "
+        f"remove_bytes={format_bytes(total_bytes)}"
+    )
+    if dry_run:
+        print("pass --yes to apply")
+    return 0
+
+
 def add_thread_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cwd")
     parser.add_argument("--codex-home")
@@ -2650,6 +3974,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=apply_checkpoint)
+
+    for command_name in ("gc", "prune"):
+        p = sub.add_parser(command_name)
+        p.add_argument("--cwd")
+        p.add_argument("--all", action="store_true")
+        p.add_argument("--max-age-days", type=int)
+        p.add_argument("--yes", action="store_true")
+        p.set_defaults(func=gc_command)
 
     p = sub.add_parser("targets")
     add_thread_args(p)

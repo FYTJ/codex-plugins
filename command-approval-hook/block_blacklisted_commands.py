@@ -89,7 +89,7 @@ def ancestor_command_lines() -> list[str]:
         seen.add(pid)
         try:
             result = subprocess.run(
-                ["/bin/ps", "-p", str(pid), "-o", "ppid=,command="],
+                ["ps", "-p", str(pid), "-o", "ppid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=1,
@@ -314,7 +314,7 @@ def notify_approval_requested(payload: dict) -> None:
         f'display notification "{escape_applescript_string(body)}" '
         f'with title "{escape_applescript_string(title)}"'
     )
-    launch_detached(["/usr/bin/osascript", "-e", script])
+    launch_detached(["osascript", "-e", script])
 
 
 def command_matches_phrase(command_words: list[str], phrase: tuple[str, ...]) -> bool:
@@ -435,7 +435,7 @@ end run
     try:
         result = subprocess.run(
             [
-                "/usr/bin/osascript",
+                "osascript",
                 "-e",
                 script,
                 project_label(payload),

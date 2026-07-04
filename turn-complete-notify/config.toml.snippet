@@ -1,2 +1,2 @@
-# 放入 ~/.codex/config.toml。请把 /Users/YOU 替换成自己的 HOME 绝对路径。
-notify = ["/Users/YOU/.codex/hooks/notify_turn_ended.py", "turn-ended"]
+# 放入 ~/.codex/config.toml。${HOME} 是发布占位，写入本机配置前按本机环境展开或替换。
+notify = ["${HOME}/.codex/hooks/notify_turn_ended.py", "turn-ended"]
