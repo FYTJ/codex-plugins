@@ -18,12 +18,14 @@ from datetime import datetime
 from pathlib import Path
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PLUGIN_ROOT = SCRIPT_DIR.parent
 DEFAULT_APP = Path("/Applications/Codex.app")
-DEFAULT_REWIND_BIN = Path.home() / ".codex" / "bin" / "codex-rewind"
+DEFAULT_REWIND_BIN = PLUGIN_ROOT / "bin" / "codex-rewind"
 PATCH_MARKERS = (
     b"codex-rewind-gui",
     b"codex-rewind-code",
-    b"__codexRewindIsPrompt",
+    b"__codexRewindPatchV2",
 )
 
 
@@ -267,42 +269,47 @@ def find_rollback_apply_function(text: str) -> str:
 
 
 def patch_conversation_intercept(root: Path) -> Path:
-    helper_marker = "__codexRewindIsPrompt"
+    helper_marker = "__codexRewindPatchV2"
     submit_pattern = re.compile(
         r"(async function [A-Za-z_$][\w$]*\(([^)]*)\)\{)let(\{beforeSendRequest:[A-Za-z_$][\w$]*,"
-        r"inheritThreadSettings:[A-Za-z_$][\w$]*=!0,\.\.\.([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*)),"
+        r"inheritThreadSettings:[A-Za-z_$][\w$]*=!0,\.\.\.([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*))([;,])"
     )
 
-    candidates: list[Path] = []
+    matches: list[tuple[Path, re.Match[str]]] = []
     for path in js_files(root):
         text = path.read_text(encoding="utf-8", errors="surrogateescape")
         if helper_marker in text:
             return path
-        if "beforeSendRequest" in text and "thread/rollback" in text and "forkConversationFromLatest" in text:
-            candidates.append(path)
+        match = submit_pattern.search(text)
+        if match and "forkConversationFromLatest" in text and "fetchFromHost" in text:
+            matches.append((path, match))
 
-    if not candidates:
+    if not matches:
         raise RuntimeError("Cannot locate app-server conversation bundle to intercept /rewind.")
-    if len(candidates) > 1:
-        names = ", ".join(str(path.relative_to(root)) for path in candidates[:5])
+    if len(matches) > 1:
+        names = ", ".join(str(path.relative_to(root)) for path, _ in matches[:5])
         raise RuntimeError(f"Ambiguous app-server conversation bundles: {names}")
 
-    path = candidates[0]
+    path, submit = matches[0]
     text = path.read_text(encoding="utf-8", errors="surrogateescape")
-    rollback_fn = find_rollback_apply_function(text)
 
-    fork_anchor = re.search(r"async function [A-Za-z_$][\w$]*\(e,\{sourceConversationId:", text)
-    if not fork_anchor:
+    helper_anchor = re.search(
+        r"async function [A-Za-z_$][\w$]*\([^)]*\)\{let\{beforeSendRequest:[A-Za-z_$][\w$]*,"
+        r"inheritThreadSettings:[A-Za-z_$][\w$]*=!0,",
+        text,
+    )
+    if not helper_anchor:
         raise RuntimeError(f"Cannot locate rewind helper insertion anchor in {path.relative_to(root)}")
 
     helper = (
-        "function __codexRewindIsPrompt(e){return Array.isArray(e)&&e.length===1&&e[0]?.type===`text`&&typeof e[0].text===`string`&&e[0].text.trim()===`/rewind`}"
-        "function __codexRewindNumTurns(e){let t=e?.plan?.session?.params?.numTurns??e?.session?.params?.numTurns??e?.plan?.session?.drops_user_turns,n=Number(t);if(!Number.isFinite(n)||n<1)throw Error(`Invalid rewind numTurns`);return Math.trunc(n)}"
-        "async function __codexRewindHandle(e,t,n){let r=e.getConversation(t);if(!r)throw Error(`Conversation state not found`);let i=n.cwd??r.cwd??`/`,a=r.rolloutPath??null,o=await e.fetchFromHost(`codex-rewind-gui`,{params:{hostId:e.hostId,cwd:i,threadId:t,rolloutPath:a}});if(!o||o.status===`dismissed`)return{status:`dismissed`};if(o.status!==`selected`)throw Error(o.error||`rewind failed`);let s=String(o.mode||`code`),c=Number(o.target);if(s===`code`||s===`both`)await e.fetchFromHost(`codex-rewind-code`,{params:{hostId:e.hostId,cwd:i,threadId:t,rolloutPath:a,target:c}});if(s===`session`||s===`both`){let n=__codexRewindNumTurns(o),r=e.getConversation(t);if(!r)throw Error(`Conversation state not found after rewind selection`);let i=await e.sendRequest(`thread/rollback`,{threadId:t,numTurns:n});"
-        f"{rollback_fn}(e,{{conversationId:t,conversationState:r,rollbackResponse:i}})"
-        "}return{status:`applied`}}"
+        "var __codexRewindPatchV2=1;"
+        "function __codexRewindV2IsPrompt(e){return Array.isArray(e)&&e.length===1&&e[0]?.type===`text`&&typeof e[0].text===`string`&&e[0].text.trim()===`/rewind`}"
+        "function __codexRewindV2NumTurns(e){let t=e?.plan?.session?.params?.numTurns??e?.session?.params?.numTurns??e?.plan?.session?.drops_user_turns,n=Number(t);if(!Number.isFinite(n)||n<1)throw Error(`Invalid rewind numTurns`);return Math.trunc(n)}"
+        "function __codexRewindV2WorkspaceRoots(e,t){let n=e?.cwd??t??`/`;return n?[n]:[`/`]}"
+        "async function __codexRewindV2RefreshConversation(e,t,n,r){try{let i=r?.thread;e.upsertConversationFromThread?.(i),e.updateConversationState?.(t,e=>{e.requests=[],e.resumeState=`needs_resume`,i&&(e.sessionId=i.sessionId??e.sessionId,e.rolloutPath=i.path??e.rolloutPath,e.cwd=i.cwd||e.cwd,e.source=i.source??e.source,e.forkedFromId=i.forkedFromId??e.forkedFromId,e.gitInfo=i.gitInfo??e.gitInfo,e.threadRuntimeStatus=i.status??e.threadRuntimeStatus,e.hasUnreadTurn=!1)})}catch(i){}try{e.inactiveThreadUnsubscriber?.clearConversationStreamOwnership?.(t)}catch(i){try{e.streamState?.removeConversation?.(t)}catch(a){}}let i=e.getConversation(t)??n;await e.resumeConversationForUnavailableOwner({conversationId:t,model:null,serviceTier:null,reasoningEffort:null,workspaceRoots:__codexRewindV2WorkspaceRoots(i,n?.cwd??`/`),collaborationMode:i?.latestCollaborationMode??null})}"
+        "async function __codexRewindV2Handle(e,t,n){let r=e.getConversation(t);if(!r)throw Error(`Conversation state not found`);let i=n.cwd??r.cwd??`/`,a=r.rolloutPath??null,o=await e.fetchFromHost(`codex-rewind-gui`,{params:{hostId:e.hostId,cwd:i,threadId:t,rolloutPath:a}});if(!o||o.status===`dismissed`)return{status:`dismissed`};if(o.status!==`selected`)throw Error(o.error||`rewind failed`);let s=String(o.mode||`code`),c=Number(o.target);if(s===`code`||s===`both`)await e.fetchFromHost(`codex-rewind-code`,{params:{hostId:e.hostId,cwd:i,threadId:t,rolloutPath:a,target:c}});if(s===`session`||s===`both`){let n=__codexRewindV2NumTurns(o),r=e.getConversation(t);if(!r)throw Error(`Conversation state not found after rewind selection`);let i=await e.sendRequest(`thread/rollback`,{threadId:t,numTurns:n});await __codexRewindV2RefreshConversation(e,t,r,i)}return{status:`applied`}}"
     )
-    text = text[: fork_anchor.start()] + helper + text[fork_anchor.start() :]
+    text = text[: helper_anchor.start()] + helper + text[helper_anchor.start() :]
 
     submit = submit_pattern.search(text)
     if not submit:
@@ -314,8 +321,12 @@ def patch_conversation_intercept(root: Path) -> Path:
     conversation_arg = args[1]
     destructuring = submit.group(3)
     rest_arg = submit.group(4)
-    intercept = f"if(__codexRewindIsPrompt({rest_arg}.input))return await __codexRewindHandle({manager_arg},{conversation_arg},{rest_arg});"
-    text = text[: submit.start()] + submit.group(1) + "let" + destructuring + ";" + intercept + "let " + text[submit.end() :]
+    separator = submit.group(6)
+    intercept = f"if(__codexRewindV2IsPrompt({rest_arg}.input))return await __codexRewindV2Handle({manager_arg},{conversation_arg},{rest_arg});"
+    if separator == ",":
+        text = text[: submit.start()] + submit.group(1) + "let" + destructuring + ";" + intercept + "let " + text[submit.end() :]
+    else:
+        text = text[: submit.start()] + submit.group(1) + "let" + destructuring + ";" + intercept + text[submit.end() :]
 
     path.write_text(text, encoding="utf-8", errors="surrogateescape")
     return path

@@ -5,7 +5,7 @@
 默认读取 `~/.claude/settings.json` 中的 `permissions.ask`。也可以设置：
 
 ```bash
-export CODEX_BLACKLIST_RULES_FILE=/path/to/blacklist-rules.txt
+export CODEX_BLACKLIST_RULES_FILE=PATH_TO_BLACKLIST_RULES
 ```
 
 普通规则文件支持每行一个短语，也支持 `Bash(...)` 形式。安装和 `hooks.json` 配置见上级目录 `README.md`。

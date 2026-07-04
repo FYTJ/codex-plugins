@@ -21,6 +21,18 @@
 
 Codex App 更新后，重新运行 `codex-rewind-patch-app --dry-run`。如果需要 patch，脚本会备份 `app.asar`，重新打包，更新 Electron 的 asar integrity hash，并对 `/Applications/Codex.app` 做 ad-hoc `codesign`。
 
+## Rewind 数据结构
+
+`/rewind` 的文件回退模型对齐 Claude Code：每个用户 prompt 建立一个 file-history snapshot，工具写入前记录相关文件的 preimage。回退代码时按目标 snapshot 恢复；如果某个文件在目标 snapshot 中不存在但后来被追踪，会使用该文件的最早版本，新建文件因此会被删除。
+
+为了避免长会话打开弹窗变慢，`manifest.json` 只保留 checkpoint 摘要和索引；重型数据被拆到：
+
+- `file-history-state.json`：当前被追踪文件及其版本链。
+- `checkpoints/<checkpoint-id>/checkpoint.json`：单个 checkpoint 的完整 snapshot。
+- `file-history/<hash>@v<version>`：实际文件备份。
+
+目标选择窗口只读取会话 JSONL 和轻量 manifest；只有用户选择“仅代码”或“对话和代码”后，才加载对应 checkpoint 和 file-history 状态计算恢复动作。
+
 ## Codex App 更新后的处理
 
 Codex App 更新通常会替换：

@@ -144,7 +144,7 @@ def send_mac(title: str, body: str, *, dry_run: bool) -> int:
         out(f"[native-notify][dry-run][mac] {title} | {body}")
         return 0
     result = subprocess.run(
-        ["/usr/bin/osascript", "-e", script],
+        ["osascript", "-e", script],
         capture_output=True,
         text=True,
         check=False,

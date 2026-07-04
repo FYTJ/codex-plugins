@@ -10,11 +10,10 @@
 
 ## 安装位置
 
-下面假设仓库位于 `~/Documents/codex-config`，Codex 配置目录是 `~/.codex`。
+在本仓库根目录运行安装命令；Codex 配置目录是 `~/.codex`。
 脚本需要 Python 3；`turn-complete-notify` 在 Python 3.10 及更早版本下需要额外安装 `tomli`。
 
 ```bash
-cd ~/Documents/codex-config
 mkdir -p ~/.codex/hooks ~/.codex/bin ~/.codex/plugins
 
 cp command-approval-hook/block_blacklisted_commands.py ~/.codex/hooks/
@@ -35,10 +34,10 @@ chmod +x ~/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app
 
 ## `config.toml` 配置
 
-把下面片段合并到 `~/.codex/config.toml`。`notify` 需要使用真实绝对路径，不要直接复制 `/Users/YOU`。
+把下面片段合并到 `~/.codex/config.toml`。`${HOME}` 是发布占位，写入本机配置前按本机环境展开或替换。
 
 ```toml
-notify = ["/Users/YOU/.codex/hooks/notify_turn_ended.py", "turn-ended"]
+notify = ["${HOME}/.codex/hooks/notify_turn_ended.py", "turn-ended"]
 
 [features]
 hooks = true
@@ -64,7 +63,7 @@ enabled = true
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOU/.codex/bin/codex-rewind hook-user-prompt",
+            "command": "~/.codex/bin/codex-rewind hook-user-prompt",
             "statusMessage": "Checking rewind command",
             "timeout": 3600
           }
@@ -77,7 +76,7 @@ enabled = true
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/python3 /Users/YOU/.codex/hooks/block_blacklisted_commands.py",
+            "command": "python3 ~/.codex/hooks/block_blacklisted_commands.py",
             "statusMessage": "Checking command blacklist",
             "timeout": 86400
           }
@@ -88,7 +87,7 @@ enabled = true
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/YOU/.codex/bin/codex-rewind hook-pre-tool",
+            "command": "~/.codex/bin/codex-rewind hook-pre-tool",
             "statusMessage": "Capturing rewind preimage"
           }
         ]
@@ -145,10 +144,10 @@ codesign --verify --deep --strict /Applications/Codex.app
 脚本默认会自动运行上述签名和验证命令。只有明确知道后果时才使用 `--skip-sign`。如果 Codex.app 不在默认路径，使用：
 
 ```bash
-~/.codex/bin/codex-rewind-patch-app --app /path/to/Codex.app
+~/.codex/bin/codex-rewind-patch-app --app PATH_TO_CODEX_APP
 ```
 
-如果本机没有全局 `asar`，脚本会优先尝试 `npx --yes @electron/asar`。没有 Node/npm 时需要先安装 Node 环境，或者用 `--asar-cmd /path/to/asar` 指定可执行文件。
+如果本机没有全局 `asar`，脚本会优先尝试 `npx --yes @electron/asar`。没有 Node/npm 时需要先安装 Node 环境，或者用 `--asar-cmd PATH_TO_ASAR` 指定可执行文件。
 
 ## 快速验证
 
