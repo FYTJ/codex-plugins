@@ -26,6 +26,7 @@ CLI fallback：
 - `preview <target> --mode session|code|both`：预览回退到指定用户消息提交前会发生什么。
 - `gui`：手动打开同一个本地选择窗口。
 - `rewind <target> --mode session|code|both`：用户明确确认后执行回退。
+- `gc` / `prune`：预览 rewind 存储清理；只有带 `--yes` 时才删除文件。
 
 兼容旧接口：
 
@@ -65,7 +66,7 @@ pwd
 - 如果用户选择 `session` 或 `both`，先确认当前环境是否提供当前 thread 所属的 live app-server control socket；没有时停止，不要把它降级成只回滚代码，也不要用新启动的 app-server 直接改当前会话。
 - 如果参数是旧接口 `diff <checkpoint>`，只运行 dry-run。
 - 如果参数是旧接口 `apply <checkpoint>`，先运行 dry-run，展示会恢复/删除的文件，然后问用户是否继续。
-- 没有用户明确同意时，不运行带 `--yes` 的恢复命令。
+- 没有用户明确同意时，不运行带 `--yes` 的恢复或 GC 命令。
 
 ## Commands
 
@@ -128,6 +129,24 @@ pwd
 其中 `<n>` 是从选中用户消息所在 turn 开始到当前状态为止需要丢弃的 Codex turn 数；它可能大于可见用户消息数，因为中间可能存在没有用户消息的空 turn。工作区回滚使用同一 target 对应的 hook file-history snapshot。
 
 代码回滚的覆盖范围与 Claude Code 一致地以 Codex 已知的文件修改为核心：每个用户 prompt 建立 snapshot，工具写入前把相关文件 preimage 记录到当前 snapshot；回退时按目标 snapshot 恢复 tracked files，目标 snapshot 中还没有的 tracked file 使用该文件最早版本。新建文件的 preimage 是“文件不存在”，因此回退时会删除它。App 既有会话没有 hook checkpoint 时，fallback 仍只覆盖 rollout 里记录的 `apply_patch`。
+
+Bash 捕获范围对齐 Claude Code：普通 shell 命令不解析路径；只有 `_simulatedSedEdit.filePath` 这类可预览 sed edit 会进入 file-history。`Write`、`Edit`、`NotebookEdit`、`apply_patch` 仍按显式文件路径或 patch header 捕获。单个实体备份默认上限为 16MB，超过上限只记录 skipped 元数据；rewind 存储自身、`.codex/backups`、`.codex/tmp`、App bundle、常见生成目录和二进制/归档后缀默认排除。
+
+### GC / Prune
+
+默认只预览：
+
+```bash
+~/.codex/bin/codex-rewind gc --cwd "$PWD"
+~/.codex/bin/codex-rewind gc --all
+```
+
+只有用户明确确认后才运行：
+
+```bash
+~/.codex/bin/codex-rewind gc --cwd "$PWD" --yes
+~/.codex/bin/codex-rewind gc --all --yes
+```
 
 ### Legacy File Checkpoints
 
