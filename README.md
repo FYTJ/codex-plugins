@@ -1,9 +1,11 @@
 # Codex Config
 
-这个仓库保存可发布的本地 Codex 扩展配置。当前仓库只包含两个功能：
+这个仓库保存可发布的本地 Codex 扩展配置。当前仓库包含这些功能：
 
 - `command-approval-hook/`：在 Bash 工具执行前检查命令黑名单，命中时弹出 macOS 审批窗口。
 - `codex-rewind/`：提供 `/rewind`，支持选择历史对话点并回退会话、工作区文件，或两者同时回退。
+- `background-shell/`：提供 Codex App background shell patch 控制器和 `openai/codex` Rust/native patch 文件。
+- `turn-complete-notify/`：可选的 Codex turn 完成后 macOS 本机通知脚本。
 
 详细用法见 [docs/USAGE.md](docs/USAGE.md)。
 
@@ -26,12 +28,20 @@
 │   ├── blacklist-rules.example.txt
 │   ├── config.toml.snippet
 │   └── hooks.example.json
+├── background-shell/
+│   ├── bin/
+│   ├── scripts/
+│   └── README.md
 ├── codex-rewind/
 │   ├── bin/
 │   ├── commands/
 │   ├── scripts/
 │   ├── config.toml.snippet
 │   ├── hooks.example.json
+│   └── README.md
+├── turn-complete-notify/
+│   ├── notify_turn_ended.py
+│   ├── notify.example.toml
 │   └── README.md
 └── docs/
     └── USAGE.md
@@ -53,9 +63,14 @@ ln -sf "$HOME/.codex/plugins/codex-rewind/bin/codex-rewind" "$HOME/.codex/bin/co
 ln -sf "$HOME/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app" "$HOME/.codex/bin/codex-rewind-patch-app"
 chmod +x "$HOME/.codex/plugins/codex-rewind/bin/codex-rewind"
 chmod +x "$HOME/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app"
+
+rm -rf "$HOME/.codex/plugins/background-shell"
+cp -R background-shell "$HOME/.codex/plugins/background-shell"
+ln -sf "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app" "$HOME/.codex/bin/codex-background-shell-patch-app"
+chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app"
 ```
 
-如果你不想覆盖已有的 `~/.codex/plugins/codex-rewind`，先手动备份该目录。
+如果你不想覆盖已有的 `~/.codex/plugins/codex-rewind` 或 `~/.codex/plugins/background-shell`，先手动备份对应目录。
 
 ## `config.toml`
 
@@ -128,6 +143,7 @@ enabled = true
 python3 -m py_compile "$HOME/.codex/hooks/block_blacklisted_commands.py"
 "$HOME/.codex/bin/codex-rewind" --help
 "$HOME/.codex/bin/codex-rewind-patch-app" --help
+"$HOME/.codex/bin/codex-background-shell-patch-app" --self-test --json
 ```
 
 如果需要在 Codex App 里直接拦截 `/rewind`，先退出正在运行的 Codex App，然后执行：
@@ -141,12 +157,14 @@ python3 -m py_compile "$HOME/.codex/hooks/block_blacklisted_commands.py"
 
 ## 更新
 
-从仓库拉取新版本后，重新复制 `codex-rewind/` 和 hook 脚本即可：
+从仓库拉取新版本后，重新复制 `codex-rewind/`、`background-shell/` 和 hook 脚本即可：
 
 ```bash
 cp command-approval-hook/block_blacklisted_commands.py "$HOME/.codex/hooks/"
 rm -rf "$HOME/.codex/plugins/codex-rewind"
 cp -R codex-rewind "$HOME/.codex/plugins/codex-rewind"
+rm -rf "$HOME/.codex/plugins/background-shell"
+cp -R background-shell "$HOME/.codex/plugins/background-shell"
 ```
 
 Codex App 每次更新后都可能覆盖 `app.asar`，需要重新运行：
@@ -157,8 +175,15 @@ Codex App 每次更新后都可能覆盖 `app.asar`，需要重新运行：
 
 若显示需要 patch，再运行不带 `--dry-run` 的命令。
 
+background shell patch 需要重新检查并按需应用：
+
+```bash
+"$HOME/.codex/bin/codex-background-shell-patch-app" --status --json
+```
+
 ## 发布边界
 
 - 不提交真实 `~/.codex/config.toml`、真实 `hooks.state`、token、cookie、浏览器 profile 或 `.env`。
 - 文档中只使用 `~/.codex`、`$HOME` 和 `/Applications/Codex.app` 这类可移植路径。
 - `codex-rewind/` 的发布包默认自包含：`bin/` wrapper 会调用同目录下的 `scripts/`。
+- `background-shell/` 不包含上游 `openai/codex` checkout、Rust `target/`、验证报告、截图、App bundle 或 DMG。

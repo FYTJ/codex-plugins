@@ -1,0 +1,2397 @@
+diff --git a/codex-rs/app-server-protocol/src/export.rs b/codex-rs/app-server-protocol/src/export.rs
+index 9f27dff..a123e78 100644
+--- a/codex-rs/app-server-protocol/src/export.rs
++++ b/codex-rs/app-server-protocol/src/export.rs
+@@ -47,6 +47,8 @@ const EXPERIMENTAL_CLIENT_METHOD_DEPENDENCY_TYPES: &[&str] = &[
+     "PathUri",
+     "RemoteControlClient",
+     "RemoteControlClientsListOrder",
++    "ThreadBackgroundTerminalsBackgroundActiveParams",
++    "ThreadBackgroundTerminalsBackgroundActiveResponse",
+     "ThreadBackgroundTerminal",
+ ];
+ const SPECIAL_DEFINITIONS: &[&str] = &[
+diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
+index d8db99d..a1e6b93 100644
+--- a/codex-rs/app-server-protocol/src/protocol/common.rs
++++ b/codex-rs/app-server-protocol/src/protocol/common.rs
+@@ -607,6 +607,12 @@ client_request_definitions! {
+         serialization: thread_id(params.thread_id),
+         response: v2::ThreadBackgroundTerminalsTerminateResponse,
+     },
++    #[experimental("thread/backgroundTerminals/backgroundActive")]
++    ThreadBackgroundTerminalsBackgroundActive => "thread/backgroundTerminals/backgroundActive" {
++        params: v2::ThreadBackgroundTerminalsBackgroundActiveParams,
++        serialization: thread_id(params.thread_id),
++        response: v2::ThreadBackgroundTerminalsBackgroundActiveResponse,
++    },
+     ThreadRollback => "thread/rollback" {
+         params: v2::ThreadRollbackParams,
+         serialization: thread_id(params.thread_id),
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
+index 7cd0393..7fbb5e4 100644
+--- a/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2/thread.rs
+@@ -1009,6 +1009,7 @@ pub struct ThreadBackgroundTerminal {
+     pub process_id: String,
+     pub command: String,
+     pub cwd: AbsolutePathBuf,
++    pub source: String,
+     pub os_pid: Option<u32>,
+     pub cpu_percent: Option<f64>,
+     pub rss_kb: Option<u64>,
+@@ -1039,6 +1040,23 @@ pub struct ThreadBackgroundTerminalsTerminateResponse {
+     pub terminated: bool,
+ }
+ 
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct ThreadBackgroundTerminalsBackgroundActiveParams {
++    pub thread_id: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional = nullable)]
++    pub source: Option<String>,
++}
++
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct ThreadBackgroundTerminalsBackgroundActiveResponse {
++    pub backgrounded: bool,
++}
++
+ #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "camelCase")]
+ #[ts(export_to = "v2/")]
+diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
+index 375307e..538abf7 100644
+--- a/codex-rs/app-server/src/message_processor.rs
++++ b/codex-rs/app-server/src/message_processor.rs
+@@ -1206,6 +1206,11 @@ impl MessageProcessor {
+                     .thread_background_terminals_terminate(params)
+                     .await
+             }
++            ClientRequest::ThreadBackgroundTerminalsBackgroundActive { params, .. } => {
++                self.thread_processor
++                    .thread_background_terminals_background_active(params)
++                    .await
++            }
+             ClientRequest::ThreadRollback { params, .. } => {
+                 self.thread_processor
+                     .thread_rollback(&request_id, params, app_server_client_name.as_deref())
+diff --git a/codex-rs/app-server/src/request_processors.rs b/codex-rs/app-server/src/request_processors.rs
+index 587325c..6374072 100644
+--- a/codex-rs/app-server/src/request_processors.rs
++++ b/codex-rs/app-server/src/request_processors.rs
+@@ -182,6 +182,8 @@ use codex_app_server_protocol::ThreadArchiveParams;
+ use codex_app_server_protocol::ThreadArchiveResponse;
+ use codex_app_server_protocol::ThreadArchivedNotification;
+ use codex_app_server_protocol::ThreadBackgroundTerminal;
++use codex_app_server_protocol::ThreadBackgroundTerminalsBackgroundActiveParams;
++use codex_app_server_protocol::ThreadBackgroundTerminalsBackgroundActiveResponse;
+ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
+ use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
+ use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index b78c53a..97ba960 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -632,6 +632,15 @@ impl ThreadRequestProcessor {
+             .map(|response| Some(response.into()))
+     }
+ 
++    pub(crate) async fn thread_background_terminals_background_active(
++        &self,
++        params: ThreadBackgroundTerminalsBackgroundActiveParams,
++    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
++        self.thread_background_terminals_background_active_inner(params)
++            .await
++            .map(|response| Some(response.into()))
++    }
++
+     pub(crate) async fn thread_rollback(
+         &self,
+         request_id: &ConnectionRequestId,
+@@ -1823,6 +1832,7 @@ impl ThreadRequestProcessor {
+                     process_id: terminal.process_id,
+                     command: terminal.command,
+                     cwd,
++                    source: terminal.source,
+                     os_pid: None,
+                     cpu_percent: None,
+                     rss_kb: None,
+@@ -1852,6 +1862,19 @@ impl ThreadRequestProcessor {
+         Ok(ThreadBackgroundTerminalsTerminateResponse { terminated })
+     }
+ 
++    async fn thread_background_terminals_background_active_inner(
++        &self,
++        params: ThreadBackgroundTerminalsBackgroundActiveParams,
++    ) -> Result<ThreadBackgroundTerminalsBackgroundActiveResponse, JSONRPCErrorError> {
++        let ThreadBackgroundTerminalsBackgroundActiveParams { thread_id, source } = params;
++
++        let (_, thread) = self.load_thread(&thread_id).await?;
++        let backgrounded = thread
++            .background_active_initial_exec(source.as_deref())
++            .await;
++        Ok(ThreadBackgroundTerminalsBackgroundActiveResponse { backgrounded })
++    }
++
+     async fn thread_shell_command_inner(
+         &self,
+         request_id: &ConnectionRequestId,
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
+index 8c0d59e..8b454f4 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
+@@ -50,6 +50,7 @@ mod background_terminal_pagination_tests {
+             process_id: process_id.to_string(),
+             command: format!("command-{process_id}"),
+             cwd: AbsolutePathBuf::from_absolute_path(cwd).expect("absolute cwd"),
++            source: "timeout".to_string(),
+             os_pid: None,
+             cpu_percent: None,
+             rss_kb: None,
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 4a56209..44b23cf 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -171,6 +171,64 @@ pub struct BackgroundTerminalInfo {
+     pub process_id: String,
+     pub command: String,
+     pub cwd: PathUri,
++    pub source: String,
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum BackgroundWakeupPhase {
++    Pending,
++    Dispatching,
++    RpcAccepted,
++    ModelObserved,
++    Delivered,
++    DispatchFailed,
++}
++
++impl BackgroundWakeupPhase {
++    pub fn as_str(self) -> &'static str {
++        match self {
++            Self::Pending => "pending",
++            Self::Dispatching => "dispatching",
++            Self::RpcAccepted => "rpc_accepted",
++            Self::ModelObserved => "model_observed",
++            Self::Delivered => "delivered",
++            Self::DispatchFailed => "dispatch_failed",
++        }
++    }
++}
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct BackgroundWakeupInfo {
++    pub notification_id: String,
++    pub process_id: String,
++    pub item_id: String,
++    pub command: String,
++    pub cwd: String,
++    pub exit_code: i32,
++    pub output_path: Option<String>,
++    pub output_entry: String,
++    pub output_summary: String,
++    pub suggested_next_step: String,
++    pub phase: BackgroundWakeupPhase,
++    pub dispatch_path: Option<String>,
++    pub dispatch_error: Option<String>,
++    pub observed_turn_id: Option<String>,
++}
++
++impl BackgroundWakeupInfo {
++    pub fn phase_name(&self) -> &'static str {
++        self.phase.as_str()
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct BackgroundWakeupRequest {
++    pub item_id: String,
++    pub process_id: i32,
++    pub command: String,
++    pub cwd: PathUri,
++    pub exit_code: i32,
++    pub output: String,
+ }
+ 
+ /// Conduit for the bidirectional stream of messages that compose a thread
+@@ -421,6 +479,10 @@ impl CodexThread {
+         self.codex.session.list_background_terminals().await
+     }
+ 
++    pub async fn list_background_terminal_wakeups(&self) -> Vec<BackgroundWakeupInfo> {
++        self.codex.session.list_background_terminal_wakeups().await
++    }
++
+     pub async fn terminate_background_terminal(&self, process_id: i32) -> bool {
+         self.codex
+             .session
+@@ -428,6 +490,17 @@ impl CodexThread {
+             .await
+     }
+ 
++    pub async fn background_active_initial_exec(&self, source: Option<&str>) -> bool {
++        let source = match source {
++            Some("user_shortcut") => crate::unified_exec::BackgroundTransitionSource::UserShortcut,
++            _ => crate::unified_exec::BackgroundTransitionSource::ForegroundAdopt,
++        };
++        self.codex
++            .session
++            .background_active_initial_exec(source)
++            .await
++    }
++
+     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
+         self.codex.agent_status.clone()
+     }
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index 5c5b7d1..3cb32b8 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -1,14 +1,25 @@
+ use super::input_queue::TurnInput;
+ use super::session::Session;
+ use super::turn_context::TurnContext;
++use crate::codex_thread::BackgroundWakeupInfo;
++use crate::codex_thread::BackgroundWakeupPhase;
++use crate::codex_thread::BackgroundWakeupRequest;
+ use crate::codex_thread::TryStartTurnIfIdleError;
+ use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
+ use crate::state::ActiveTurn;
+ use crate::state::TurnState;
+ use crate::tasks::RegularTask;
+ use codex_protocol::config_types::ModeKind;
++use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ResponseItem;
++use codex_protocol::protocol::EventMsg;
++use codex_utils_path_uri::LegacyAppPathString;
+ use std::sync::Arc;
++use tokio::time::Duration;
++use uuid::Uuid;
++
++const BACKGROUND_WAKEUP_STUCK_MESSAGE: &str = "guided-message-stuck";
++const BACKGROUND_WAKEUP_MARKER: &str = "background_wakeup";
+ 
+ impl Session {
+     /// Returns the input if there is no active turn to inject into.
+@@ -158,4 +169,394 @@ impl Session {
+         };
+         self.record_conversation_items(turn_context, &items).await;
+     }
++
++    pub(crate) async fn dispatch_background_terminal_wakeup(
++        self: &Arc<Self>,
++        request: BackgroundWakeupRequest,
++    ) {
++        let notification_id = format!(
++            "{BACKGROUND_WAKEUP_MARKER}-{}-{}",
++            request.process_id,
++            Uuid::new_v4()
++        );
++        let output_path = self
++            .hook_transcript_path()
++            .await
++            .map(|path| path.to_string_lossy().into_owned());
++        let output_entry = format!("exec_command_end process_id={}", request.process_id);
++        let suggested_next_step =
++            "Inspect the output, report the result, and continue the interrupted work.".to_string();
++        let wakeup = BackgroundWakeupInfo {
++            notification_id: notification_id.clone(),
++            process_id: request.process_id.to_string(),
++            item_id: request.item_id,
++            command: request.command,
++            cwd: LegacyAppPathString::from(request.cwd).render_for_ui(),
++            exit_code: request.exit_code,
++            output_path,
++            output_entry,
++            output_summary: summarize_background_output(&request.output),
++            suggested_next_step,
++            phase: BackgroundWakeupPhase::Pending,
++            dispatch_path: None,
++            dispatch_error: None,
++            observed_turn_id: None,
++        };
++
++        self.background_terminal_wakeups
++            .lock()
++            .await
++            .push(wakeup.clone());
++        self.update_background_wakeup(
++            &notification_id,
++            BackgroundWakeupPhase::Dispatching,
++            None,
++            None,
++            None,
++        )
++        .await;
++
++        let prompt = format_background_wakeup_prompt(&wakeup);
++        let item = ResponseItem::Message {
++            id: None,
++            role: "user".to_string(),
++            content: vec![ContentItem::InputText { text: prompt }],
++            phase: None,
++            internal_chat_message_metadata_passthrough: None,
++        };
++        let items = vec![item];
++
++        if self.active_turn.lock().await.is_some() {
++            let dispatch_path = "busy_deferred_idle_turn".to_string();
++            self.update_background_wakeup(
++                &notification_id,
++                BackgroundWakeupPhase::RpcAccepted,
++                Some(dispatch_path.clone()),
++                None,
++                None,
++            )
++            .await;
++            self.spawn_deferred_background_wakeup_idle_turn(notification_id, items, dispatch_path);
++            return;
++        }
++
++        match self.try_start_turn_if_idle(items).await {
++            Ok(()) => {
++                let dispatch_path = "idle_direct_turn".to_string();
++                self.update_background_wakeup(
++                    &notification_id,
++                    BackgroundWakeupPhase::RpcAccepted,
++                    Some(dispatch_path.clone()),
++                    None,
++                    None,
++                )
++                .await;
++                self.update_background_wakeup(
++                    &notification_id,
++                    BackgroundWakeupPhase::ModelObserved,
++                    Some(dispatch_path),
++                    None,
++                    None,
++                )
++                .await;
++                self.spawn_background_wakeup_watchdog(notification_id);
++            }
++            Err(err) if err.reason() == TryStartTurnIfIdleRejectionReason::Busy => {
++                let dispatch_path = "busy_deferred_idle_turn_after_idle_race".to_string();
++                self.update_background_wakeup(
++                    &notification_id,
++                    BackgroundWakeupPhase::RpcAccepted,
++                    Some(dispatch_path.clone()),
++                    None,
++                    None,
++                )
++                .await;
++                self.spawn_deferred_background_wakeup_idle_turn(
++                    notification_id,
++                    err.into_input(),
++                    dispatch_path,
++                );
++            }
++            Err(err) => {
++                self.update_background_wakeup(
++                    &notification_id,
++                    BackgroundWakeupPhase::DispatchFailed,
++                    None,
++                    Some(format!("idle dispatch rejected: {:?}", err.reason())),
++                    None,
++                )
++                .await;
++            }
++        }
++    }
++
++    pub async fn list_background_terminal_wakeups(&self) -> Vec<BackgroundWakeupInfo> {
++        self.background_terminal_wakeups.lock().await.clone()
++    }
++
++    pub(crate) async fn observe_background_wakeup_model_event(
++        &self,
++        turn_context: &TurnContext,
++        msg: &EventMsg,
++    ) {
++        let Some(text) = background_wakeup_observation_text(msg) else {
++            return;
++        };
++        let matching_ids = {
++            let wakeups = self.background_terminal_wakeups.lock().await;
++            wakeups
++                .iter()
++                .filter(|wakeup| {
++                    !matches!(
++                        wakeup.phase,
++                        BackgroundWakeupPhase::Delivered | BackgroundWakeupPhase::DispatchFailed
++                    ) && background_wakeup_text_matches(wakeup, &text)
++                })
++                .map(|wakeup| wakeup.notification_id.clone())
++                .collect::<Vec<_>>()
++        };
++
++        for notification_id in matching_ids {
++            self.update_background_wakeup(
++                &notification_id,
++                BackgroundWakeupPhase::Delivered,
++                None,
++                None,
++                Some(turn_context.sub_id.clone()),
++            )
++            .await;
++        }
++    }
++
++    async fn update_background_wakeup(
++        &self,
++        notification_id: &str,
++        phase: BackgroundWakeupPhase,
++        dispatch_path: Option<String>,
++        dispatch_error: Option<String>,
++        observed_turn_id: Option<String>,
++    ) {
++        let mut wakeups = self.background_terminal_wakeups.lock().await;
++        let Some(wakeup) = wakeups
++            .iter_mut()
++            .find(|wakeup| wakeup.notification_id == notification_id)
++        else {
++            return;
++        };
++        if matches!(
++            wakeup.phase,
++            BackgroundWakeupPhase::Delivered | BackgroundWakeupPhase::DispatchFailed
++        ) && phase != wakeup.phase
++        {
++            return;
++        }
++        wakeup.phase = phase;
++        if let Some(dispatch_path) = dispatch_path {
++            wakeup.dispatch_path = Some(dispatch_path);
++        }
++        if let Some(dispatch_error) = dispatch_error {
++            wakeup.dispatch_error = Some(dispatch_error);
++        }
++        if let Some(observed_turn_id) = observed_turn_id {
++            wakeup.observed_turn_id = Some(observed_turn_id);
++        }
++    }
++
++    fn spawn_background_wakeup_watchdog(self: &Arc<Self>, notification_id: String) {
++        let session = Arc::clone(self);
++        tokio::spawn(async move {
++            tokio::time::sleep(background_wakeup_stuck_timeout()).await;
++            session
++                .update_background_wakeup_if_still_pending_delivery(&notification_id)
++                .await;
++        });
++    }
++
++    fn spawn_deferred_background_wakeup_idle_turn(
++        self: &Arc<Self>,
++        notification_id: String,
++        items: Vec<ResponseItem>,
++        dispatch_path: String,
++    ) {
++        let session = Arc::clone(self);
++        let runtime = tokio::runtime::Handle::current();
++        let thread_name = format!("codex-bg-wakeup-{}", notification_id);
++        let notification_id_for_thread = notification_id.clone();
++        let spawn_result = std::thread::Builder::new()
++            .name(thread_name)
++            .stack_size(8 * 1024 * 1024)
++            .spawn(move || {
++                runtime.block_on(async move {
++                    let deadline =
++                        tokio::time::Instant::now() + background_wakeup_deferred_idle_timeout();
++                    let mut pending_items = Some(items);
++                    loop {
++                        if tokio::time::Instant::now() >= deadline {
++                            session
++                                .update_background_wakeup(
++                                    &notification_id_for_thread,
++                                    BackgroundWakeupPhase::DispatchFailed,
++                                    None,
++                                    Some(BACKGROUND_WAKEUP_STUCK_MESSAGE.to_string()),
++                                    None,
++                                )
++                                .await;
++                            return;
++                        }
++
++                        if session.active_turn.lock().await.is_none() {
++                            let items = pending_items.take().unwrap_or_default();
++                            match session.try_start_turn_if_idle(items).await {
++                                Ok(()) => {
++                                    session
++                                        .update_background_wakeup(
++                                            &notification_id_for_thread,
++                                            BackgroundWakeupPhase::ModelObserved,
++                                            Some(dispatch_path),
++                                            None,
++                                            None,
++                                        )
++                                        .await;
++                                    session.spawn_background_wakeup_watchdog(
++                                        notification_id_for_thread,
++                                    );
++                                    return;
++                                }
++                                Err(err)
++                                    if matches!(
++                                        err.reason(),
++                                        TryStartTurnIfIdleRejectionReason::Busy
++                                            | TryStartTurnIfIdleRejectionReason::PendingTriggerTurn
++                                    ) =>
++                                {
++                                    pending_items = Some(err.into_input());
++                                }
++                                Err(err) => {
++                                    session
++                                        .update_background_wakeup(
++                                            &notification_id_for_thread,
++                                            BackgroundWakeupPhase::DispatchFailed,
++                                            None,
++                                            Some(format!(
++                                                "deferred idle dispatch rejected: {:?}",
++                                                err.reason()
++                                            )),
++                                            None,
++                                        )
++                                        .await;
++                                    return;
++                                }
++                            }
++                        }
++
++                        tokio::time::sleep(Duration::from_millis(250)).await;
++                    }
++                });
++            });
++
++        if let Err(error) = spawn_result {
++            let session = Arc::clone(self);
++            tokio::spawn(async move {
++                session
++                    .update_background_wakeup(
++                        &notification_id,
++                        BackgroundWakeupPhase::DispatchFailed,
++                        None,
++                        Some(format!("deferred idle thread spawn failed: {error}")),
++                        None,
++                    )
++                    .await;
++            });
++        }
++    }
++
++    async fn update_background_wakeup_if_still_pending_delivery(&self, notification_id: &str) {
++        let mut wakeups = self.background_terminal_wakeups.lock().await;
++        let Some(wakeup) = wakeups
++            .iter_mut()
++            .find(|wakeup| wakeup.notification_id == notification_id)
++        else {
++            return;
++        };
++        if matches!(
++            wakeup.phase,
++            BackgroundWakeupPhase::RpcAccepted | BackgroundWakeupPhase::ModelObserved
++        ) {
++            wakeup.phase = BackgroundWakeupPhase::DispatchFailed;
++            wakeup.dispatch_error = Some(BACKGROUND_WAKEUP_STUCK_MESSAGE.to_string());
++        }
++    }
++}
++
++fn background_wakeup_stuck_timeout() -> Duration {
++    if cfg!(test) {
++        Duration::from_millis(200)
++    } else {
++        Duration::from_secs(120)
++    }
++}
++
++fn background_wakeup_deferred_idle_timeout() -> Duration {
++    if cfg!(test) {
++        Duration::from_secs(2)
++    } else {
++        Duration::from_secs(900)
++    }
++}
++
++fn summarize_background_output(output: &str) -> String {
++    let trimmed = output.trim();
++    if trimmed.is_empty() {
++        return "<no output>".to_string();
++    }
++    let mut summary = trimmed.chars().take(1200).collect::<String>();
++    if trimmed.chars().count() > summary.chars().count() {
++        summary.push_str("\n[truncated]");
++    }
++    summary
++}
++
++fn format_background_wakeup_prompt(wakeup: &BackgroundWakeupInfo) -> String {
++    format!(
++        "Background terminal completed.\n\
++         Notification phase: {}\n\
++         Task id: {}\n\
++         Process id: {}\n\
++         Command: {}\n\
++         CWD: {}\n\
++         Exit status: {}\n\
++         Output path: {}\n\
++         Output entry: {}\n\
++         Output summary:\n{}\n\
++         Suggested next step: {}\n\
++         Please mention task id {} in your response so Codex can confirm model consumption.",
++        wakeup.phase_name(),
++        wakeup.notification_id,
++        wakeup.process_id,
++        wakeup.command,
++        wakeup.cwd,
++        wakeup.exit_code,
++        wakeup
++            .output_path
++            .as_deref()
++            .unwrap_or("<not materialized>"),
++        wakeup.output_entry,
++        wakeup.output_summary,
++        wakeup.suggested_next_step,
++        wakeup.notification_id
++    )
++}
++
++fn background_wakeup_observation_text(msg: &EventMsg) -> Option<String> {
++    match msg {
++        EventMsg::AgentMessage(event) => Some(event.message.clone()),
++        EventMsg::ItemCompleted(event) => Some(format!("{:?}", event.item)),
++        _ => None,
++    }
++}
++
++fn background_wakeup_text_matches(wakeup: &BackgroundWakeupInfo, text: &str) -> bool {
++    text.contains(&wakeup.notification_id)
++        || (!wakeup.process_id.is_empty() && text.contains(&wakeup.process_id))
++        || (!wakeup.command.is_empty() && text.contains(&wakeup.command))
+ }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 978768b..49943db 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -1765,6 +1765,8 @@ impl Session {
+             msg,
+         };
+         self.send_event_raw(event).await;
++        self.observe_background_wakeup_model_event(turn_context, &legacy_source)
++            .await;
+         self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+             .await;
+         self.maybe_mirror_event_text_to_realtime(&legacy_source)
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 5e7046b..d909b8e 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -1,6 +1,7 @@
+ use super::input_queue::InputQueue;
+ use super::*;
+ use crate::agents_md_manager::AgentsMdManager;
++use crate::codex_thread::BackgroundWakeupInfo;
+ use crate::config::ConstraintError;
+ use crate::environment_selection::ThreadEnvironments;
+ use crate::environment_selection::TurnEnvironmentSnapshot;
+@@ -43,6 +44,7 @@ pub(crate) struct Session {
+     pub(crate) conversation: Arc<RealtimeConversationManager>,
+     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+     pub(crate) input_queue: InputQueue,
++    pub(crate) background_terminal_wakeups: Mutex<Vec<BackgroundWakeupInfo>>,
+     pub(crate) guardian_review_session: GuardianReviewSessionManager,
+     pub(crate) services: SessionServices,
+     pub(super) next_internal_sub_id: AtomicU64,
+@@ -1141,6 +1143,7 @@ impl Session {
+                 conversation: Arc::new(RealtimeConversationManager::new()),
+                 active_turn: Mutex::new(None),
+                 input_queue: InputQueue::new(),
++                background_terminal_wakeups: Mutex::new(Vec::new()),
+                 guardian_review_session: GuardianReviewSessionManager::default(),
+                 services,
+                 next_internal_sub_id: AtomicU64::new(0),
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index ece9d44..4569f67 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -5503,6 +5503,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
+         conversation: Arc::new(RealtimeConversationManager::new()),
+         active_turn: Mutex::new(None),
+         input_queue: super::input_queue::InputQueue::new(),
++        background_terminal_wakeups: Mutex::new(Vec::new()),
+         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
+         services,
+         next_internal_sub_id: AtomicU64::new(0),
+@@ -7629,6 +7630,7 @@ where
+         conversation: Arc::new(RealtimeConversationManager::new()),
+         active_turn: Mutex::new(None),
+         input_queue: super::input_queue::InputQueue::new(),
++        background_terminal_wakeups: Mutex::new(Vec::new()),
+         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
+         services,
+         next_internal_sub_id: AtomicU64::new(0),
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index c6d9d29..3a1b973 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -34,6 +34,7 @@ use crate::session::turn_context::TurnContext;
+ use crate::state::ActiveTurn;
+ use crate::state::RunningTask;
+ use crate::state::TaskKind;
++use crate::unified_exec::BackgroundTransitionSource;
+ use codex_analytics::TurnProfileFact;
+ use codex_analytics::TurnTokenUsageFact;
+ use codex_login::AuthManager;
+@@ -826,6 +827,16 @@ impl Session {
+             .await
+     }
+ 
++    pub(crate) async fn background_active_initial_exec(
++        &self,
++        source: BackgroundTransitionSource,
++    ) -> bool {
++        self.services
++            .unified_exec_manager
++            .background_active_initial_exec(source)
++            .await
++    }
++
+     async fn handle_task_abort(self: &Arc<Self>, task: RunningTask, reason: TurnAbortReason) {
+         let sub_id = task.turn_context.sub_id.clone();
+         if task.cancellation_token.is_cancelled() {
+diff --git a/codex-rs/core/src/tools/handlers/shell/shell_command.rs b/codex-rs/core/src/tools/handlers/shell/shell_command.rs
+index 62bcee8..e2d3f65 100644
+--- a/codex-rs/core/src/tools/handlers/shell/shell_command.rs
++++ b/codex-rs/core/src/tools/handlers/shell/shell_command.rs
+@@ -12,9 +12,16 @@ use crate::maybe_emit_implicit_skill_invocation;
+ use crate::session::turn_context::TurnContext;
+ use crate::session::turn_context::TurnEnvironment;
+ use crate::shell::Shell;
++use crate::tools::context::ExecCommandToolOutput;
++use crate::tools::context::SharedTurnDiffTracker;
+ use crate::tools::context::ToolInvocation;
++use crate::tools::context::ToolOutput;
+ use crate::tools::context::ToolPayload;
+ use crate::tools::context::boxed_tool_output;
++use crate::tools::handlers::apply_granted_turn_permissions;
++use crate::tools::handlers::apply_patch::intercept_apply_patch;
++use crate::tools::handlers::implicit_granted_permissions;
++use crate::tools::handlers::normalize_and_validate_additional_permissions;
+ use crate::tools::handlers::parse_arguments_with_base_path;
+ use crate::tools::handlers::resolve_workdir_base_path;
+ use crate::tools::handlers::rewrite_function_string_argument;
+@@ -25,7 +32,16 @@ use crate::tools::registry::PostToolUsePayload;
+ use crate::tools::registry::PreToolUsePayload;
+ use crate::tools::registry::ToolExecutor;
+ use crate::tools::runtimes::shell::ShellRuntimeBackend;
++use crate::unified_exec::BackgroundTransitionSource;
++use crate::unified_exec::ExecCommandRequest;
++use crate::unified_exec::UnifiedExecContext;
++use crate::unified_exec::UnifiedExecError;
++use crate::unified_exec::generate_chunk_id;
+ use codex_tools::ToolSpec;
++use codex_tools::UnifiedExecShellMode;
++use codex_utils_output_truncation::approx_token_count;
++use codex_utils_path_uri::PathUri;
++use std::sync::Arc;
+ 
+ use super::super::shell_spec::CommandToolOptions;
+ use super::super::shell_spec::create_shell_command_tool;
+@@ -159,6 +175,167 @@ impl ToolExecutor<ToolInvocation> for ShellCommandHandler {
+ }
+ 
+ impl ShellCommandHandler {
++    #[allow(clippy::too_many_arguments)]
++    async fn handle_background_call(
++        &self,
++        session: Arc<crate::session::session::Session>,
++        turn: Arc<TurnContext>,
++        turn_environment: TurnEnvironment,
++        tracker: SharedTurnDiffTracker,
++        call_id: String,
++        tool_name: ToolName,
++        params: &ShellCommandToolCallParams,
++        exec_params: &ExecParams,
++        shell_type: crate::shell::ShellType,
++        prefix_rule: Option<Vec<String>>,
++    ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
++        let manager = &session.services.unified_exec_manager;
++        let context = UnifiedExecContext::new(session.clone(), turn.clone(), call_id);
++        let process_id = manager.allocate_process_id().await;
++        let cwd = PathUri::from_abs_path(&exec_params.cwd);
++        let sandbox_permissions = params.sandbox_permissions.unwrap_or_default();
++        let requested_additional_permissions = params.additional_permissions.clone();
++        let effective_additional_permissions = apply_granted_turn_permissions(
++            context.session.as_ref(),
++            &turn_environment.environment_id,
++            exec_params.cwd.as_path(),
++            sandbox_permissions,
++            params.additional_permissions.clone(),
++        )
++        .await;
++        let additional_permissions_allowed = context
++            .session
++            .features()
++            .enabled(codex_features::Feature::ExecPermissionApprovals)
++            || (context
++                .session
++                .features()
++                .enabled(codex_features::Feature::RequestPermissionsTool)
++                && effective_additional_permissions.permissions_preapproved);
++
++        if effective_additional_permissions
++            .sandbox_permissions
++            .requests_sandbox_override()
++            && !effective_additional_permissions.permissions_preapproved
++            && !matches!(
++                context.turn.approval_policy.value(),
++                codex_protocol::protocol::AskForApproval::OnRequest
++            )
++        {
++            let approval_policy = context.turn.approval_policy.value();
++            manager.release_process_id(process_id).await;
++            return Err(FunctionCallError::RespondToModel(format!(
++                "approval policy is {approval_policy:?}; reject command — you cannot ask for escalated permissions if the approval policy is {approval_policy:?}"
++            )));
++        }
++
++        let normalized_additional_permissions = match implicit_granted_permissions(
++            sandbox_permissions,
++            requested_additional_permissions.as_ref(),
++            &effective_additional_permissions,
++        )
++        .map_or_else(
++            || {
++                normalize_and_validate_additional_permissions(
++                    additional_permissions_allowed,
++                    context.turn.approval_policy.value(),
++                    effective_additional_permissions.sandbox_permissions,
++                    effective_additional_permissions.additional_permissions,
++                    effective_additional_permissions.permissions_preapproved,
++                    exec_params.cwd.as_path(),
++                )
++            },
++            |permissions| Ok(Some(permissions)),
++        ) {
++            Ok(normalized) => normalized,
++            Err(err) => {
++                manager.release_process_id(process_id).await;
++                return Err(FunctionCallError::RespondToModel(err));
++            }
++        };
++
++        let fs = turn_environment.environment.get_filesystem();
++        if let Some(output) = intercept_apply_patch(
++            &exec_params.command,
++            &cwd,
++            fs.as_ref(),
++            turn_environment.clone(),
++            context.session.clone(),
++            context.turn.clone(),
++            Some(&tracker),
++            &context.call_id,
++            tool_name.name.as_str(),
++        )
++        .await?
++        {
++            manager.release_process_id(process_id).await;
++            return Ok(boxed_tool_output(ExecCommandToolOutput {
++                event_call_id: String::new(),
++                chunk_id: String::new(),
++                wall_time: std::time::Duration::ZERO,
++                raw_output: output.into_text().into_bytes(),
++                truncation_policy: turn.model_info.truncation_policy.into(),
++                max_output_tokens: None,
++                process_id: None,
++                exit_code: None,
++                original_token_count: None,
++                hook_command: None,
++            }));
++        }
++
++        let command_for_display =
++            codex_shell_command::parse_command::shlex_join(&exec_params.command);
++        match manager
++            .exec_command(
++                ExecCommandRequest {
++                    command: exec_params.command.clone(),
++                    shell_type,
++                    hook_command: params.command.clone(),
++                    process_id,
++                    yield_time_ms: params.timeout_ms.unwrap_or(10_000),
++                    run_in_background: true,
++                    background_source: BackgroundTransitionSource::Explicit,
++                    max_output_tokens: None,
++                    cwd: cwd.clone(),
++                    sandbox_cwd: cwd,
++                    turn_environment: turn_environment.clone(),
++                    shell_mode: UnifiedExecShellMode::Direct,
++                    network: exec_params.network.clone(),
++                    tty: false,
++                    sandbox_permissions: effective_additional_permissions.sandbox_permissions,
++                    additional_permissions: normalized_additional_permissions,
++                    additional_permissions_preapproved: effective_additional_permissions
++                        .permissions_preapproved,
++                    justification: exec_params.justification.clone(),
++                    prefix_rule,
++                },
++                &context,
++            )
++            .await
++        {
++            Ok(response) => Ok(boxed_tool_output(response)),
++            Err(UnifiedExecError::SandboxDenied { output, .. }) => {
++                let output_text = output.aggregated_output.text;
++                let original_token_count = approx_token_count(&output_text);
++                Ok(boxed_tool_output(ExecCommandToolOutput {
++                    event_call_id: context.call_id.clone(),
++                    chunk_id: generate_chunk_id(),
++                    wall_time: output.duration,
++                    raw_output: output_text.into_bytes(),
++                    truncation_policy: turn.model_info.truncation_policy.into(),
++                    max_output_tokens: None,
++                    process_id: None,
++                    exit_code: Some(output.exit_code),
++                    original_token_count: Some(original_token_count),
++                    hook_command: Some(params.command.clone()),
++                }))
++            }
++            Err(err) => Err(FunctionCallError::RespondToModel(format!(
++                "shell_command background failed for `{command_for_display}`: {err:?}"
++            ))),
++        }
++    }
++
+     async fn handle_call(
+         &self,
+         invocation: ToolInvocation,
+@@ -217,6 +394,22 @@ impl ShellCommandHandler {
+                 .as_ref()
+                 .map_or_else(|| session.user_shell().shell_type, |shell| shell.shell_type),
+         );
++        if params.run_in_background {
++            return self
++                .handle_background_call(
++                    session,
++                    turn,
++                    turn_environment,
++                    tracker,
++                    call_id,
++                    tool_name,
++                    &params,
++                    &exec_params,
++                    shell_type.expect("shell_type is always populated"),
++                    prefix_rule,
++                )
++                .await;
++        }
+         run_exec_like(RunExecLikeArgs {
+             tool_name,
+             exec_params,
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec.rs b/codex-rs/core/src/tools/handlers/shell_spec.rs
+index 3fb563b..ef6c551 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec.rs
+@@ -54,6 +54,12 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+                 "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+             )),
+         ),
++        (
++            "run_in_background".to_string(),
++            JsonSchema::boolean(Some(
++                "True starts the command as a background terminal immediately and returns a session ID without waiting for normal output. Use for long-running servers, simulations, monitors, and intentional sleep commands.".to_string(),
++            )),
++        ),
+     ]);
+     if include_shell_parameter {
+         properties.insert(
+@@ -89,11 +95,11 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
+         name: "exec_command".to_string(),
+         description: if cfg!(windows) {
+             format!(
+-                "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\n{}",
++                "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Long-running foreground commands can be moved to the background; use run_in_background for commands expected to continue.\n\n{}",
+                 windows_shell_guidance()
+             )
+         } else {
+-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
++            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Long-running foreground commands can be moved to the background; use run_in_background for commands expected to continue."
+                 .to_string()
+         },
+         strict: false,
+@@ -171,6 +177,12 @@ pub fn create_shell_command_tool(options: CommandToolOptions) -> ToolSpec {
+                 "Maximum command runtime. Defaults to 10000 ms.".to_string(),
+             )),
+         ),
++        (
++            "run_in_background".to_string(),
++            JsonSchema::boolean(Some(
++                "True starts the command as a native background terminal immediately and returns without waiting for normal command completion. Use for long-running servers, simulations, monitors, and intentional sleep commands.".to_string(),
++            )),
++        ),
+     ]);
+     if options.allow_login_shell {
+         properties.insert(
+@@ -202,7 +214,7 @@ Examples of valid command strings:
+             windows_shell_guidance()
+         )
+     } else {
+-        r#"Runs a shell command and returns its output.
++        r#"Runs a shell command and returns its output. Use run_in_background for long-running commands that should continue as native background terminals.
+ - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
+             .to_string()
+     };
+diff --git a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+index b7bbfa5..1382380 100644
+--- a/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_spec_tests.rs
+@@ -22,11 +22,11 @@ fn exec_command_tool_matches_expected_spec() {
+ 
+     let description = if cfg!(windows) {
+         format!(
+-            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.{}",
++            "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Long-running foreground commands can be moved to the background; use run_in_background for commands expected to continue.{}",
+             windows_shell_guidance_description()
+         )
+     } else {
+-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
++        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. Long-running foreground commands can be moved to the background; use run_in_background for commands expected to continue."
+             .to_string()
+     };
+ 
+@@ -67,6 +67,12 @@ fn exec_command_tool_matches_expected_spec() {
+                     "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.".to_string(),
+                 )),
+         ),
++        (
++            "run_in_background".to_string(),
++            JsonSchema::boolean(Some(
++                    "True starts the command as a background terminal immediately and returns a session ID without waiting for normal output. Use for long-running servers, simulations, monitors, and intentional sleep commands.".to_string(),
++                )),
++        ),
+         (
+             "login".to_string(),
+             JsonSchema::boolean(Some(
+@@ -220,7 +226,7 @@ Examples of valid command strings:
+             .to_string()
+             + &windows_shell_guidance_description()
+     } else {
+-        r#"Runs a shell command and returns its output.
++        r#"Runs a shell command and returns its output. Use run_in_background for long-running commands that should continue as native background terminals.
+ - Always set the `workdir` param when using the shell_command function. Do not use `cd` unless absolutely necessary."#
+             .to_string()
+     };
+@@ -244,6 +250,12 @@ Examples of valid command strings:
+                 "Maximum command runtime. Defaults to 10000 ms.".to_string(),
+             )),
+         ),
++        (
++            "run_in_background".to_string(),
++            JsonSchema::boolean(Some(
++                "True starts the command as a native background terminal immediately and returns without waiting for normal command completion. Use for long-running servers, simulations, monitors, and intentional sleep commands.".to_string(),
++            )),
++        ),
+         (
+             "login".to_string(),
+             JsonSchema::boolean(Some(
+diff --git a/codex-rs/core/src/tools/handlers/shell_tests.rs b/codex-rs/core/src/tools/handlers/shell_tests.rs
+index ebfbf91..a083f6d 100644
+--- a/codex-rs/core/src/tools/handlers/shell_tests.rs
++++ b/codex-rs/core/src/tools/handlers/shell_tests.rs
+@@ -2,6 +2,7 @@ use std::path::PathBuf;
+ use std::sync::Arc;
+ 
+ use codex_protocol::models::ActivePermissionProfile;
++use codex_protocol::models::PermissionProfile;
+ use codex_protocol::models::ShellCommandToolCallParams;
+ use pretty_assertions::assert_eq;
+ 
+@@ -22,11 +23,13 @@ use crate::tools::context::ToolPayload;
+ use crate::tools::handlers::ShellCommandHandler;
+ use crate::tools::hook_names::HookToolName;
+ use crate::tools::registry::CoreToolRuntime;
++use crate::tools::registry::ToolExecutor;
+ use crate::turn_diff_tracker::TurnDiffTracker;
+ use codex_shell_command::is_safe_command::is_known_safe_command;
+ use codex_shell_command::powershell::try_find_powershell_executable_blocking;
+ use codex_shell_command::powershell::try_find_pwsh_executable_blocking;
+ use codex_utils_path_uri::PathUri;
++use core_test_support::skip_if_sandbox;
+ use serde_json::json;
+ use tokio::sync::Mutex;
+ 
+@@ -123,6 +126,7 @@ async fn shell_command_handler_to_exec_params_uses_selected_environment() {
+         workdir,
+         login,
+         timeout_ms,
++        run_in_background: false,
+         sandbox_permissions: Some(sandbox_permissions),
+         additional_permissions: None,
+         prefix_rule: None,
+@@ -204,6 +208,7 @@ async fn shell_command_handler_defaults_to_non_login_when_disallowed() {
+         workdir: None,
+         login: None,
+         timeout_ms: None,
++        run_in_background: false,
+         sandbox_permissions: None,
+         additional_permissions: None,
+         prefix_rule: None,
+@@ -303,3 +308,56 @@ async fn build_post_tool_use_payload_uses_tool_output_wire_value() {
+         })
+     );
+ }
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn shell_command_run_in_background_registers_native_terminal() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, mut turn) = make_session_and_context().await;
++    turn.permission_profile = PermissionProfile::Disabled;
++    let session = Arc::new(session);
++    let turn = Arc::new(turn);
++    let handler = ShellCommandHandler::from(codex_tools::ShellCommandBackendConfig::Classic);
++    let command = "printf shell-background-start; sleep 2";
++    let call_id = "call-shell-background".to_string();
++    #[allow(deprecated)]
++    let workdir = turn.cwd.to_string_lossy().to_string();
++
++    let _output = handler
++        .handle(ToolInvocation {
++            session: Arc::clone(&session),
++            step_context: StepContext::for_test(Arc::clone(&turn)),
++            turn: Arc::clone(&turn),
++            cancellation_token: tokio_util::sync::CancellationToken::new(),
++            tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
++            call_id: call_id.clone(),
++            tool_name: codex_tools::ToolName::plain("shell_command"),
++            source: ToolCallSource::Direct,
++            payload: ToolPayload::Function {
++                arguments: json!({
++                    "command": command,
++                    "workdir": workdir,
++                    "run_in_background": true,
++                })
++                .to_string(),
++            },
++        })
++        .await
++        .map_err(|err| anyhow::anyhow!(err.to_string()))?;
++
++    let terminals = session.list_background_terminals().await;
++    assert_eq!(terminals.len(), 1);
++    assert_eq!(terminals[0].item_id, call_id);
++    assert_eq!(terminals[0].command, command);
++    assert_eq!(terminals[0].source, "explicit_tool");
++
++    let process_id = terminals[0].process_id.parse::<i32>()?;
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .terminate_process(process_id)
++            .await
++    );
++    Ok(())
++}
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec.rs b/codex-rs/core/src/tools/handlers/unified_exec.rs
+index 71e776d..39b803b 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec.rs
+@@ -38,6 +38,8 @@ pub(crate) struct ExecCommandArgs {
+     #[serde(default)]
+     max_output_tokens: Option<usize>,
+     #[serde(default)]
++    run_in_background: bool,
++    #[serde(default)]
+     sandbox_permissions: SandboxPermissions,
+     #[serde(default)]
+     additional_permissions: Option<AdditionalPermissionProfile>,
+@@ -69,6 +71,63 @@ fn default_tty() -> bool {
+     false
+ }
+ 
++pub(crate) fn detect_blocked_sleep_pattern(command: &str) -> Option<String> {
++    let first = first_shell_segment(command).trim();
++    let tokens = shlex::split(first)?;
++    let [program, seconds] = tokens.as_slice() else {
++        return None;
++    };
++    if program != "sleep" {
++        return None;
++    }
++    let seconds = seconds.parse::<u64>().ok()?;
++    (seconds >= 2).then(|| format!("leading sleep {seconds}s"))
++}
++
++fn first_shell_segment(command: &str) -> &str {
++    let mut single_quoted = false;
++    let mut double_quoted = false;
++    let mut escaped = false;
++    let bytes = command.as_bytes();
++    let mut index = 0;
++    while index < bytes.len() {
++        let byte = bytes[index];
++        if escaped {
++            escaped = false;
++            index += 1;
++            continue;
++        }
++        if byte == b'\\' && !single_quoted {
++            escaped = true;
++            index += 1;
++            continue;
++        }
++        if byte == b'\'' && !double_quoted {
++            single_quoted = !single_quoted;
++            index += 1;
++            continue;
++        }
++        if byte == b'"' && !single_quoted {
++            double_quoted = !double_quoted;
++            index += 1;
++            continue;
++        }
++        if !single_quoted && !double_quoted {
++            if byte == b';' {
++                return &command[..index];
++            }
++            if index + 1 < bytes.len() {
++                let next = bytes[index + 1];
++                if (byte == b'&' && next == b'&') || (byte == b'|' && next == b'|') {
++                    return &command[..index];
++                }
++            }
++        }
++        index += 1;
++    }
++    command
++}
++
+ #[derive(Debug)]
+ pub(crate) struct ResolvedCommand {
+     pub(crate) command: Vec<String>,
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index 546ad45..7531bb6 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -21,6 +21,7 @@ use crate::tools::registry::CoreToolRuntime;
+ use crate::tools::registry::PostToolUsePayload;
+ use crate::tools::registry::PreToolUsePayload;
+ use crate::tools::registry::ToolExecutor;
++use crate::unified_exec::BackgroundTransitionSource;
+ use crate::unified_exec::ExecCommandRequest;
+ use crate::unified_exec::UnifiedExecContext;
+ use crate::unified_exec::UnifiedExecError;
+@@ -42,6 +43,7 @@ use super::super::shell_spec::CommandToolOptions;
+ use super::super::shell_spec::create_exec_command_tool_with_environment_id;
+ use super::ExecCommandArgs;
+ use super::ExecCommandEnvironmentArgs;
++use super::detect_blocked_sleep_pattern;
+ use super::get_command;
+ use super::post_unified_exec_tool_use_payload;
+ use super::shell_mode_for_environment;
+@@ -190,6 +192,13 @@ impl ExecCommandHandler {
+             }
+         };
+         let hook_command = args.cmd.clone();
++        if !args.run_in_background
++            && let Some(reason) = detect_blocked_sleep_pattern(&hook_command)
++        {
++            return Err(FunctionCallError::RespondToModel(format!(
++                "blocked command for background-terminal safety: {reason}. Use the dedicated sleep tool or set `run_in_background` to true for an intentional background sleep."
++            )));
++        }
+         // TODO(anp) wire PathUri through implicit skills instead of skipping on foreign paths
+         if let Some(native_cwd) = native_cwd.as_ref() {
+             maybe_emit_implicit_skill_invocation(
+@@ -243,6 +252,7 @@ impl ExecCommandHandler {
+         let ExecCommandArgs {
+             tty,
+             yield_time_ms,
++            run_in_background,
+             max_output_tokens,
+             sandbox_permissions,
+             additional_permissions,
+@@ -348,6 +358,12 @@ impl ExecCommandHandler {
+                     hook_command: hook_command.clone(),
+                     process_id,
+                     yield_time_ms,
++                    run_in_background,
++                    background_source: if run_in_background {
++                        BackgroundTransitionSource::Explicit
++                    } else {
++                        BackgroundTransitionSource::Timeout
++                    },
+                     max_output_tokens,
+                     cwd,
+                     sandbox_cwd: native_environment_cwd,
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec_tests.rs b/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
+index 6f859a8..ede711b 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec_tests.rs
+@@ -201,6 +201,38 @@ fn test_get_command_rejects_explicit_shell_in_zsh_fork_mode() -> anyhow::Result<
+     Ok(())
+ }
+ 
++#[test]
++fn sleep_denylist_matches_claude_leading_sleep_boundaries() {
++    assert_eq!(
++        detect_blocked_sleep_pattern("sleep 5").as_deref(),
++        Some("leading sleep 5s")
++    );
++    assert_eq!(
++        detect_blocked_sleep_pattern(" sleep 5 && echo done").as_deref(),
++        Some("leading sleep 5s")
++    );
++    assert_eq!(
++        detect_blocked_sleep_pattern("sleep 5; echo done").as_deref(),
++        Some("leading sleep 5s")
++    );
++    assert_eq!(detect_blocked_sleep_pattern("pwd && sleep 5"), None);
++    assert_eq!(detect_blocked_sleep_pattern("sleep 5 | cat"), None);
++    assert_eq!(detect_blocked_sleep_pattern("/bin/sleep 5"), None);
++    assert_eq!(detect_blocked_sleep_pattern("sleep 1"), None);
++    assert_eq!(detect_blocked_sleep_pattern("sleep 0.5"), None);
++    assert_eq!(detect_blocked_sleep_pattern("sleep 2 extra"), None);
++}
++
++#[test]
++fn exec_command_args_support_explicit_background_flag() -> anyhow::Result<()> {
++    let args: ExecCommandArgs = parse_arguments(r#"{"cmd":"sleep 5","run_in_background":true}"#)?;
++    assert!(args.run_in_background);
++
++    let args: ExecCommandArgs = parse_arguments(r#"{"cmd":"echo done"}"#)?;
++    assert!(!args.run_in_background);
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn shell_mode_for_environment_uses_direct_mode_for_remote_environments() -> anyhow::Result<()>
+ {
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index 3801075..69660e9 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -1,5 +1,7 @@
+ use std::pin::Pin;
+ use std::sync::Arc;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
+ 
+ use tokio::sync::Mutex;
+ use tokio::time::Duration;
+@@ -8,6 +10,7 @@ use tokio::time::Sleep;
+ 
+ use super::UnifiedExecContext;
+ use super::process::UnifiedExecProcess;
++use crate::codex_thread::BackgroundWakeupRequest;
+ use crate::exec::MAX_EXEC_OUTPUT_DELTAS_PER_CALL;
+ use crate::session::session::Session;
+ use crate::session::turn_context::TurnContext;
+@@ -110,10 +113,12 @@ pub(crate) fn spawn_exit_watcher(
+     turn_ref: Arc<TurnContext>,
+     call_id: String,
+     command: Vec<String>,
++    hook_command: String,
+     cwd: PathUri,
+     process_id: i32,
+     transcript: Arc<Mutex<HeadTailBuffer>>,
+     started_at: Instant,
++    background_wakeup_armed: Arc<AtomicBool>,
+ ) {
+     let exit_token = process.cancellation_token();
+     let output_drained = process.output_drained_notify();
+@@ -123,16 +128,19 @@ pub(crate) fn spawn_exit_watcher(
+         output_drained.notified().await;
+ 
+         let duration = Instant::now().saturating_duration_since(started_at);
++        let aggregated_output = resolve_aggregated_output(&transcript, String::new()).await;
++        let wakeup_item_id = call_id.clone();
++        let wakeup_cwd = cwd.clone();
+         if let Some(message) = process.failure_message() {
+             emit_failed_exec_end_for_unified_exec(
+-                session_ref,
+-                turn_ref,
++                Arc::clone(&session_ref),
++                Arc::clone(&turn_ref),
+                 call_id,
+                 command,
+-                cwd,
++                cwd.clone(),
+                 Some(process_id.to_string()),
+-                transcript,
+-                String::new(),
++                Arc::clone(&transcript),
++                aggregated_output.clone(),
+                 message,
+                 duration,
+             )
+@@ -140,19 +148,31 @@ pub(crate) fn spawn_exit_watcher(
+         } else {
+             let exit_code = process.exit_code().unwrap_or(-1);
+             emit_exec_end_for_unified_exec(
+-                session_ref,
+-                turn_ref,
++                Arc::clone(&session_ref),
++                Arc::clone(&turn_ref),
+                 call_id,
+                 command,
+-                cwd,
++                cwd.clone(),
+                 Some(process_id.to_string()),
+-                transcript,
+-                String::new(),
++                Arc::clone(&transcript),
++                aggregated_output.clone(),
+                 exit_code,
+                 duration,
+             )
+             .await;
+         }
++        if background_wakeup_armed.load(Ordering::Acquire) {
++            session_ref
++                .dispatch_background_terminal_wakeup(BackgroundWakeupRequest {
++                    item_id: wakeup_item_id,
++                    process_id,
++                    command: hook_command,
++                    cwd: wakeup_cwd,
++                    exit_code: process.exit_code().unwrap_or(-1),
++                    output: aggregated_output,
++                })
++                .await;
++        }
+     });
+ }
+ 
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 34d88c8..b396e98 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -67,6 +67,7 @@ pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 2_000;
+ pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
+ pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
+ pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
++pub(crate) const AUTO_BACKGROUND_THRESHOLD_MS: u64 = 450_000;
+ pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
+ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
+ pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_TOKENS: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES / 4;
+@@ -95,6 +96,8 @@ pub(crate) struct ExecCommandRequest {
+     pub hook_command: String,
+     pub process_id: i32,
+     pub yield_time_ms: u64,
++    pub run_in_background: bool,
++    pub background_source: BackgroundTransitionSource,
+     pub max_output_tokens: Option<usize>,
+     pub cwd: PathUri,
+     pub sandbox_cwd: PathUri,
+@@ -109,6 +112,27 @@ pub(crate) struct ExecCommandRequest {
+     pub prefix_rule: Option<Vec<String>>,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum BackgroundTransitionSource {
++    Explicit,
++    ForegroundAdopt,
++    AutoThreshold,
++    UserShortcut,
++    Timeout,
++}
++
++impl BackgroundTransitionSource {
++    pub(crate) fn as_str(self) -> &'static str {
++        match self {
++            Self::Explicit => "explicit_tool",
++            Self::ForegroundAdopt => "foreground_adopt",
++            Self::AutoThreshold => "auto_threshold",
++            Self::UserShortcut => "user_shortcut",
++            Self::Timeout => "timeout",
++        }
++    }
++}
++
+ #[derive(Debug)]
+ pub(crate) struct WriteStdinRequest<'a> {
+     pub process_id: i32,
+@@ -158,6 +182,9 @@ struct ProcessEntry {
+     process_id: i32,
+     cwd: PathUri,
+     initial_exec_command_active: Arc<std::sync::atomic::AtomicBool>,
++    background_request: Arc<std::sync::atomic::AtomicBool>,
++    background_notify: Arc<tokio::sync::Notify>,
++    background_source: BackgroundTransitionSource,
+     hook_command: String,
+     tty: bool,
+     network_approval: Option<DeferredNetworkApproval>,
+diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
+index 54ee788..db24e64 100644
+--- a/codex-rs/core/src/unified_exec/mod_tests.rs
++++ b/codex-rs/core/src/unified_exec/mod_tests.rs
+@@ -1,12 +1,14 @@
+ use super::head_tail_buffer::HeadTailBuffer;
+ use super::*;
+ use crate::codex_thread::BackgroundTerminalInfo;
++use crate::codex_thread::BackgroundWakeupPhase;
+ use crate::exec::ExecCapturePolicy;
+ use crate::exec::ExecExpiration;
+ use crate::sandboxing::ExecRequest;
+ use crate::session::session::Session;
+ use crate::session::tests::make_session_and_context;
+ use crate::session::turn_context::TurnContext;
++use crate::state::ActiveTurn;
+ use crate::tools::context::ExecCommandToolOutput;
+ use crate::unified_exec::WriteStdinRequest;
+ use crate::unified_exec::process::OutputHandles;
+@@ -19,6 +21,9 @@ use codex_exec_server::ReadResponse;
+ use codex_exec_server::StartedExecProcess;
+ use codex_exec_server::WriteResponse;
+ use codex_exec_server::WriteStatus;
++use codex_protocol::models::PermissionProfile;
++use codex_protocol::protocol::AgentMessageEvent;
++use codex_protocol::protocol::EventMsg;
+ use codex_sandboxing::SandboxType;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+ use codex_utils_output_truncation::TruncationPolicy;
+@@ -36,7 +41,8 @@ use tokio::time::Duration;
+ use tokio::time::Instant;
+ 
+ async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+-    let (session, turn) = make_session_and_context().await;
++    let (session, mut turn) = make_session_and_context().await;
++    turn.permission_profile = PermissionProfile::Disabled;
+     (Arc::new(session), Arc::new(turn))
+ }
+ 
+@@ -132,6 +138,9 @@ async fn exec_command_with_tty(
+             process_id,
+             cwd: cwd.clone().into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
++            background_request: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++            background_notify: Arc::new(tokio::sync::Notify::new()),
++            background_source: BackgroundTransitionSource::Timeout,
+             hook_command: cmd.to_string(),
+             tty,
+             network_approval: None,
+@@ -162,6 +171,7 @@ async fn exec_command_with_tty(
+         &cancellation_token,
+         Some(session.subscribe_out_of_band_elicitation_pause_state()),
+         deadline,
++        None,
+     )
+     .await;
+     let wall_time = Instant::now().saturating_duration_since(started_at);
+@@ -201,6 +211,43 @@ async fn exec_command_with_tty(
+     })
+ }
+ 
++fn exec_command_request_for_test(
++    turn: &Arc<TurnContext>,
++    cmd: &str,
++    process_id: i32,
++    yield_time_ms: u64,
++    run_in_background: bool,
++    background_source: BackgroundTransitionSource,
++) -> ExecCommandRequest {
++    #[allow(deprecated)]
++    let cwd = turn.cwd.clone();
++    ExecCommandRequest {
++        command: vec!["bash".to_string(), "-lc".to_string(), cmd.to_string()],
++        shell_type: crate::shell::ShellType::Bash,
++        hook_command: cmd.to_string(),
++        process_id,
++        yield_time_ms,
++        run_in_background,
++        background_source,
++        max_output_tokens: None,
++        cwd: cwd.clone().into(),
++        sandbox_cwd: cwd.into(),
++        turn_environment: turn
++            .environments
++            .primary()
++            .cloned()
++            .expect("primary environment"),
++        shell_mode: codex_tools::UnifiedExecShellMode::Direct,
++        network: None,
++        tty: true,
++        sandbox_permissions: crate::sandboxing::SandboxPermissions::UseDefault,
++        additional_permissions: None,
++        additional_permissions_preapproved: false,
++        justification: None,
++        prefix_rule: None,
++    }
++}
++
+ #[derive(Debug)]
+ struct TestSpawnLifecycle {
+     inherited_fds: Vec<i32>,
+@@ -371,6 +418,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
+             process_id: process_id.to_string(),
+             command: "bash -i".to_string(),
+             cwd: cwd.into(),
++            source: "timeout".to_string(),
+         }]
+     );
+ 
+@@ -403,6 +451,467 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
+     Ok(())
+ }
+ 
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn explicit_background_exec_returns_session_without_waiting() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let context = UnifiedExecContext::new(
++        Arc::clone(&session),
++        Arc::clone(&turn),
++        "call-explicit-background".to_string(),
++    );
++    let request = exec_command_request_for_test(
++        &turn,
++        "sleep 2; echo done",
++        process_id,
++        /*yield_time_ms*/ 30_000,
++        /*run_in_background*/ true,
++        BackgroundTransitionSource::Explicit,
++    );
++
++    let start = Instant::now();
++    let output = manager.exec_command(request, &context).await?;
++    assert!(start.elapsed() < Duration::from_secs(1));
++    assert_eq!(output.process_id, Some(process_id));
++    assert_eq!(
++        session.list_background_terminals().await,
++        vec![BackgroundTerminalInfo {
++            item_id: "call-explicit-background".to_string(),
++            process_id: process_id.to_string(),
++            command: "sleep 2; echo done".to_string(),
++            #[allow(deprecated)]
++            cwd: turn.cwd.clone().into(),
++            source: "explicit_tool".to_string(),
++        }]
++    );
++
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_summary_exposes_command_title() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let context = UnifiedExecContext::new(
++        Arc::clone(&session),
++        Arc::clone(&turn),
++        "call-summary-output".to_string(),
++    );
++    let command = "printf 'first line from command\\n'; sleep 2";
++    let request = exec_command_request_for_test(
++        &turn,
++        command,
++        process_id,
++        /*yield_time_ms*/ 30_000,
++        /*run_in_background*/ true,
++        BackgroundTransitionSource::Explicit,
++    );
++
++    let output = manager.exec_command(request, &context).await?;
++    assert_eq!(output.hook_command.as_deref(), Some(command));
++    assert_eq!(
++        session.list_background_terminals().await,
++        vec![BackgroundTerminalInfo {
++            item_id: "call-summary-output".to_string(),
++            process_id: process_id.to_string(),
++            command: command.to_string(),
++            #[allow(deprecated)]
++            cwd: turn.cwd.clone().into(),
++            source: "explicit_tool".to_string(),
++        }]
++    );
++
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_native_terminate_controls_single_process() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let first_id = manager.allocate_process_id().await;
++    let second_id = manager.allocate_process_id().await;
++
++    for (process_id, call_id, command) in [
++        (first_id, "call-stop-one", "sleep 5; echo first"),
++        (second_id, "call-stop-two", "sleep 5; echo second"),
++    ] {
++        let context =
++            UnifiedExecContext::new(Arc::clone(&session), Arc::clone(&turn), call_id.to_string());
++        let request = exec_command_request_for_test(
++            &turn,
++            command,
++            process_id,
++            /*yield_time_ms*/ 30_000,
++            /*run_in_background*/ true,
++            BackgroundTransitionSource::Explicit,
++        );
++        let output = manager.exec_command(request, &context).await?;
++        assert_eq!(output.process_id, Some(process_id));
++    }
++
++    assert_eq!(session.list_background_terminals().await.len(), 2);
++    assert!(session.terminate_background_terminal(first_id).await);
++    let remaining = session.list_background_terminals().await;
++    assert_eq!(remaining.len(), 1);
++    assert_eq!(remaining[0].process_id, second_id.to_string());
++    assert_eq!(remaining[0].command, "sleep 5; echo second");
++    assert!(session.terminate_background_terminal(second_id).await);
++    assert!(session.list_background_terminals().await.is_empty());
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_exit_wakeup_is_model_observed_then_delivered() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let context = UnifiedExecContext::new(
++        Arc::clone(&session),
++        Arc::clone(&turn),
++        "call-background-wakeup".to_string(),
++    );
++    let command = "sleep 0.25; echo background-wakeup-done";
++    let request = exec_command_request_for_test(
++        &turn,
++        command,
++        process_id,
++        /*yield_time_ms*/ 30_000,
++        /*run_in_background*/ true,
++        BackgroundTransitionSource::Explicit,
++    );
++
++    let output = manager.exec_command(request, &context).await?;
++    assert_eq!(output.process_id, Some(process_id));
++    {
++        let mut active_turn = session.active_turn.lock().await;
++        *active_turn = Some(ActiveTurn::default());
++    }
++
++    tokio::time::timeout(Duration::from_secs(2), async {
++        loop {
++            let wakeups = session.list_background_terminal_wakeups().await;
++            if wakeups
++                .first()
++                .is_some_and(|wakeup| wakeup.phase == BackgroundWakeupPhase::RpcAccepted)
++            {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(20)).await;
++        }
++    })
++    .await
++    .expect("background completion wakeup should be accepted while the active turn is busy");
++
++    let wakeup = session
++        .list_background_terminal_wakeups()
++        .await
++        .into_iter()
++        .next()
++        .expect("wakeup record");
++    assert_eq!(wakeup.item_id, "call-background-wakeup");
++    assert_eq!(wakeup.process_id, process_id.to_string());
++    assert_eq!(wakeup.command, command);
++    assert_eq!(wakeup.exit_code, 0);
++    assert_eq!(
++        wakeup.dispatch_path.as_deref(),
++        Some("busy_deferred_idle_turn")
++    );
++    assert!(
++        wakeup.output_summary.contains("background-wakeup-done"),
++        "output summary should include terminal output: {:?}",
++        wakeup.output_summary
++    );
++
++    {
++        let mut active_turn = session.active_turn.lock().await;
++        *active_turn = None;
++    }
++
++    tokio::time::timeout(Duration::from_secs(2), async {
++        loop {
++            let wakeups = session.list_background_terminal_wakeups().await;
++            if wakeups
++                .first()
++                .is_some_and(|wakeup| wakeup.phase == BackgroundWakeupPhase::ModelObserved)
++            {
++                break;
++            }
++            tokio::time::sleep(Duration::from_millis(20)).await;
++        }
++    })
++    .await
++    .expect(
++        "deferred background wakeup should start an idle model turn after the active turn ends",
++    );
++    assert!(
++        session.active_turn.lock().await.is_some(),
++        "deferred busy wakeup should reserve and start a follow-up turn"
++    );
++
++    session
++        .send_event(
++            turn.as_ref(),
++            EventMsg::AgentMessage(AgentMessageEvent {
++                message: format!("Handled {}", wakeup.notification_id),
++                phase: None,
++                memory_citation: None,
++            }),
++        )
++        .await;
++
++    let delivered = session
++        .list_background_terminal_wakeups()
++        .await
++        .into_iter()
++        .next()
++        .expect("delivered wakeup record");
++    assert_eq!(delivered.phase, BackgroundWakeupPhase::Delivered);
++    assert_eq!(
++        delivered.observed_turn_id.as_deref(),
++        Some(turn.sub_id.as_str())
++    );
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_wakeup_watchdog_marks_guided_message_stuck() -> anyhow::Result<()> {
++    let (session, turn) = test_session_and_turn().await;
++    {
++        let mut active_turn = session.active_turn.lock().await;
++        *active_turn = Some(ActiveTurn::default());
++    }
++
++    session
++        .dispatch_background_terminal_wakeup(crate::codex_thread::BackgroundWakeupRequest {
++            item_id: "call-stuck-wakeup".to_string(),
++            process_id: 4242,
++            command: "sleep 1; echo never-observed".to_string(),
++            #[allow(deprecated)]
++            cwd: turn.cwd.clone().into(),
++            exit_code: 0,
++            output: "never-observed".to_string(),
++        })
++        .await;
++
++    tokio::time::sleep(Duration::from_millis(2300)).await;
++    let wakeup = session
++        .list_background_terminal_wakeups()
++        .await
++        .into_iter()
++        .next()
++        .expect("wakeup record");
++    assert_eq!(wakeup.phase, BackgroundWakeupPhase::DispatchFailed);
++    assert_eq!(
++        wakeup.dispatch_error.as_deref(),
++        Some("guided-message-stuck")
++    );
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_idle_wakeup_uses_idle_direct_turn() -> anyhow::Result<()> {
++    let (session, turn) = test_session_and_turn().await;
++
++    session
++        .dispatch_background_terminal_wakeup(crate::codex_thread::BackgroundWakeupRequest {
++            item_id: "call-idle-wakeup".to_string(),
++            process_id: 5252,
++            command: "sleep 120; echo idle-observed".to_string(),
++            #[allow(deprecated)]
++            cwd: turn.cwd.clone().into(),
++            exit_code: 0,
++            output: "idle-observed".to_string(),
++        })
++        .await;
++
++    let wakeup = session
++        .list_background_terminal_wakeups()
++        .await
++        .into_iter()
++        .next()
++        .expect("wakeup record");
++    assert_eq!(wakeup.phase, BackgroundWakeupPhase::ModelObserved);
++    assert_eq!(wakeup.dispatch_path.as_deref(), Some("idle_direct_turn"));
++    assert!(
++        session.active_turn.lock().await.is_some(),
++        "idle wakeup should reserve and start a turn through Codex native idle gate"
++    );
++
++    session.interrupt_task().await;
++
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn yield_timeout_background_exec_records_timeout_source() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let context = UnifiedExecContext::new(
++        Arc::clone(&session),
++        Arc::clone(&turn),
++        "call-timeout-background".to_string(),
++    );
++    let request = exec_command_request_for_test(
++        &turn,
++        "sleep 2; echo done",
++        process_id,
++        /*yield_time_ms*/ 250,
++        /*run_in_background*/ false,
++        BackgroundTransitionSource::Timeout,
++    );
++
++    let output = manager.exec_command(request, &context).await?;
++    assert_eq!(output.process_id, Some(process_id));
++    assert_eq!(
++        session
++            .list_background_terminals()
++            .await
++            .first()
++            .map(|terminal| terminal.source.as_str()),
++        Some("timeout")
++    );
++
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn manual_background_request_wakes_initial_exec() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let request = exec_command_request_for_test(
++        &turn,
++        "sleep 5; echo done",
++        process_id,
++        /*yield_time_ms*/ 30_000,
++        /*run_in_background*/ false,
++        BackgroundTransitionSource::Timeout,
++    );
++
++    let exec_task = tokio::spawn({
++        let session = Arc::clone(&session);
++        let turn = Arc::clone(&turn);
++        async move {
++            let context = UnifiedExecContext::new(
++                Arc::clone(&session),
++                Arc::clone(&turn),
++                "call-foreground-adopt".to_string(),
++            );
++            session
++                .services
++                .unified_exec_manager
++                .exec_command(request, &context)
++                .await
++        }
++    });
++
++    tokio::time::sleep(Duration::from_millis(250)).await;
++    assert!(
++        manager
++            .background_active_initial_exec(BackgroundTransitionSource::ForegroundAdopt)
++            .await
++    );
++
++    let output = tokio::time::timeout(Duration::from_secs(2), exec_task)
++        .await
++        .expect("manual background request should wake initial exec")??;
++    assert_eq!(output.process_id, Some(process_id));
++    assert_eq!(
++        session
++            .list_background_terminals()
++            .await
++            .first()
++            .map(|terminal| terminal.source.as_str()),
++        Some("foreground_adopt")
++    );
++
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn user_shortcut_background_request_records_user_shortcut_source() -> anyhow::Result<()> {
++    skip_if_sandbox!(Ok(()));
++
++    let (session, turn) = test_session_and_turn().await;
++    let manager = &session.services.unified_exec_manager;
++    let process_id = manager.allocate_process_id().await;
++    let request = exec_command_request_for_test(
++        &turn,
++        "sleep 5; echo done",
++        process_id,
++        /*yield_time_ms*/ 30_000,
++        /*run_in_background*/ false,
++        BackgroundTransitionSource::Timeout,
++    );
++
++    let exec_task = tokio::spawn({
++        let session = Arc::clone(&session);
++        let turn = Arc::clone(&turn);
++        async move {
++            let context = UnifiedExecContext::new(
++                Arc::clone(&session),
++                Arc::clone(&turn),
++                "call-user-shortcut".to_string(),
++            );
++            session
++                .services
++                .unified_exec_manager
++                .exec_command(request, &context)
++                .await
++        }
++    });
++
++    tokio::time::sleep(Duration::from_millis(250)).await;
++    assert!(
++        manager
++            .background_active_initial_exec(BackgroundTransitionSource::UserShortcut)
++            .await
++    );
++
++    let output = tokio::time::timeout(Duration::from_secs(2), exec_task)
++        .await
++        .expect("user shortcut background request should wake initial exec")??;
++    assert_eq!(output.process_id, Some(process_id));
++    assert_eq!(
++        session
++            .list_background_terminals()
++            .await
++            .first()
++            .map(|terminal| terminal.source.as_str()),
++        Some("user_shortcut")
++    );
++
++    assert!(manager.terminate_process(process_id).await);
++    Ok(())
++}
++
++#[test]
++fn auto_background_threshold_is_450_seconds() {
++    assert_eq!(AUTO_BACKGROUND_THRESHOLD_MS, 450_000);
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
+     skip_if_sandbox!(Ok(()));
+@@ -676,6 +1185,9 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
+             process_id,
+             cwd: cwd.into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
++            background_request: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++            background_notify: Arc::new(Notify::new()),
++            background_source: BackgroundTransitionSource::Timeout,
+             hook_command: "sleep 60".to_string(),
+             tty: true,
+             network_approval: None,
+@@ -749,6 +1261,9 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
+             process_id,
+             cwd: cwd.into(),
+             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++            background_request: Arc::new(std::sync::atomic::AtomicBool::new(false)),
++            background_notify: Arc::new(Notify::new()),
++            background_source: BackgroundTransitionSource::Timeout,
+             hook_command: "sleep 60".to_string(),
+             tty: true,
+             network_approval: None,
+@@ -876,6 +1391,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
+         &cancellation_token,
+         /*pause_state*/ None,
+         Instant::now() + Duration::from_millis(2_500),
++        None,
+     )
+     .await;
+ 
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index ef22918..88c4643 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -34,6 +34,8 @@ use crate::tools::runtimes::unified_exec::UnifiedExecRuntime;
+ use crate::tools::sandboxing::SandboxAttempt;
+ use crate::tools::sandboxing::ToolCtx;
+ use crate::tools::sandboxing::ToolError;
++use crate::unified_exec::AUTO_BACKGROUND_THRESHOLD_MS;
++use crate::unified_exec::BackgroundTransitionSource;
+ use crate::unified_exec::ExecCommandRequest;
+ use crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES;
+ use crate::unified_exec::MAX_YIELD_TIME_MS;
+@@ -216,6 +218,11 @@ struct InitialExecCommandGuard {
+     active: Arc<AtomicBool>,
+ }
+ 
++pub(super) struct BackgroundRequestSignal {
++    requested: Arc<AtomicBool>,
++    notify: Arc<Notify>,
++}
++
+ impl Drop for InitialExecCommandGuard {
+     fn drop(&mut self) {
+         self.active.store(false, Ordering::Release);
+@@ -452,6 +459,9 @@ impl UnifiedExecProcessManager {
+         // Persist live sessions before the initial yield wait so interrupting the
+         // turn cannot drop the last Arc and terminate the background process.
+         let process_started_alive = !process.has_exited() && process.exit_code().is_none();
++        let background_request = Arc::new(AtomicBool::new(false));
++        let background_notify = Arc::new(Notify::new());
++        let background_wakeup_armed = Arc::new(AtomicBool::new(false));
+         let _initial_exec_command_guard = if process_started_alive {
+             let initial_exec_command_active = Arc::new(AtomicBool::new(true));
+             self.store_process(
+@@ -466,6 +476,10 @@ impl UnifiedExecProcessManager {
+                 deferred_network_approval.clone(),
+                 Arc::clone(&transcript),
+                 Arc::clone(&initial_exec_command_active),
++                Arc::clone(&background_request),
++                Arc::clone(&background_notify),
++                Arc::clone(&background_wakeup_armed),
++                request.background_source,
+             )
+             .await;
+             Some(InitialExecCommandGuard {
+@@ -475,7 +489,11 @@ impl UnifiedExecProcessManager {
+             None
+         };
+ 
+-        let yield_time_ms = clamp_yield_time(request.yield_time_ms);
++        let yield_time_ms = if request.run_in_background {
++            0
++        } else {
++            clamp_yield_time(request.yield_time_ms)
++        };
+         // For the initial exec_command call, we both stream output to events
+         // (via start_streaming_output above) and collect a snapshot here for
+         // the tool response body.
+@@ -499,6 +517,10 @@ impl UnifiedExecProcessManager {
+                     .subscribe_out_of_band_elicitation_pause_state(),
+             ),
+             deadline,
++            process_started_alive.then_some(BackgroundRequestSignal {
++                requested: Arc::clone(&background_request),
++                notify: Arc::clone(&background_notify),
++            }),
+         )
+         .await;
+         let wall_time = Instant::now().saturating_duration_since(start);
+@@ -553,6 +575,13 @@ impl UnifiedExecProcessManager {
+         }
+         let process_id = request.process_id;
+         let (response_process_id, exit_code) = if process_started_alive {
++            if !background_request.load(Ordering::Acquire)
++                && !request.run_in_background
++                && wall_time >= Duration::from_millis(AUTO_BACKGROUND_THRESHOLD_MS)
++            {
++                self.set_background_source(process_id, BackgroundTransitionSource::AutoThreshold)
++                    .await;
++            }
+             match self.refresh_process_state(process_id).await {
+                 ProcessStatus::Alive {
+                     exit_code,
+@@ -622,6 +651,9 @@ impl UnifiedExecProcessManager {
+         };
+ 
+         let original_token_count = approx_token_count(&text);
++        if response_process_id.is_some() {
++            background_wakeup_armed.store(true, Ordering::Release);
++        }
+         let response = ExecCommandToolOutput {
+             event_call_id: context.call_id.clone(),
+             chunk_id,
+@@ -712,6 +744,7 @@ impl UnifiedExecProcessManager {
+             &cancellation_token,
+             pause_state,
+             deadline,
++            None,
+         )
+         .await;
+         let wall_time = Instant::now().saturating_duration_since(start);
+@@ -873,13 +906,21 @@ impl UnifiedExecProcessManager {
+         network_approval: Option<DeferredNetworkApproval>,
+         transcript: Arc<tokio::sync::Mutex<HeadTailBuffer>>,
+         initial_exec_command_active: Arc<AtomicBool>,
++        background_request: Arc<AtomicBool>,
++        background_notify: Arc<Notify>,
++        background_wakeup_armed: Arc<AtomicBool>,
++        background_source: BackgroundTransitionSource,
+     ) {
++        let hook_command_for_wakeup = hook_command.clone();
+         let entry = ProcessEntry {
+             process: Arc::clone(&process),
+             call_id: context.call_id.clone(),
+             process_id,
+             cwd: cwd.clone(),
+             initial_exec_command_active,
++            background_request,
++            background_notify,
++            background_source,
+             hook_command,
+             tty,
+             network_approval,
+@@ -905,10 +946,12 @@ impl UnifiedExecProcessManager {
+             Arc::clone(&context.turn),
+             context.call_id.clone(),
+             command.to_vec(),
++            hook_command_for_wakeup,
+             cwd,
+             process_id,
+             transcript,
+             started_at,
++            background_wakeup_armed,
+         );
+     }
+ 
+@@ -1212,6 +1255,7 @@ impl UnifiedExecProcessManager {
+         cancellation_token: &CancellationToken,
+         mut pause_state: Option<watch::Receiver<bool>>,
+         mut deadline: Instant,
++        background_request_signal: Option<BackgroundRequestSignal>,
+     ) -> Vec<u8> {
+         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
+ 
+@@ -1219,6 +1263,12 @@ impl UnifiedExecProcessManager {
+         let mut exit_signal_received = cancellation_token.is_cancelled();
+         let mut post_exit_deadline: Option<Instant> = None;
+         loop {
++            if background_request_signal
++                .as_ref()
++                .is_some_and(|signal| signal.requested.load(Ordering::Acquire))
++            {
++                break;
++            }
+             Self::extend_deadlines_while_paused(
+                 &mut pause_state,
+                 &mut deadline,
+@@ -1271,11 +1321,23 @@ impl UnifiedExecProcessManager {
+                 tokio::pin!(notified);
+                 let exit_notified = cancellation_token.cancelled();
+                 tokio::pin!(exit_notified);
+-                tokio::select! {
+-                    _ = &mut notified => {}
+-                    _ = &mut exit_notified => exit_signal_received = true,
+-                    _ = tokio::time::sleep(remaining) => break,
+-                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
++                if let Some(signal) = background_request_signal.as_ref() {
++                    let background_notified = signal.notify.notified();
++                    tokio::pin!(background_notified);
++                    tokio::select! {
++                        _ = &mut notified => {}
++                        _ = &mut exit_notified => exit_signal_received = true,
++                        _ = &mut background_notified => break,
++                        _ = tokio::time::sleep(remaining) => break,
++                        _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
++                    }
++                } else {
++                    tokio::select! {
++                        _ = &mut notified => {}
++                        _ = &mut exit_notified => exit_signal_received = true,
++                        _ = tokio::time::sleep(remaining) => break,
++                        _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
++                    }
+                 }
+                 continue;
+             }
+@@ -1409,10 +1471,46 @@ impl UnifiedExecProcessManager {
+                 process_id: entry.process_id.to_string(),
+                 command: entry.hook_command.clone(),
+                 cwd: entry.cwd.clone(),
++                source: entry.background_source.as_str().to_string(),
+             })
+             .collect()
+     }
+ 
++    async fn set_background_source(&self, process_id: i32, source: BackgroundTransitionSource) {
++        let mut store = self.process_store.lock().await;
++        if let Some(entry) = store.processes.get_mut(&process_id) {
++            entry.background_source = source;
++        }
++    }
++
++    pub(crate) async fn background_active_initial_exec(
++        &self,
++        source: BackgroundTransitionSource,
++    ) -> bool {
++        let notify = {
++            let mut store = self.process_store.lock().await;
++            let Some(entry) = store
++                .processes
++                .values_mut()
++                .filter(|entry| {
++                    !entry.process.has_exited()
++                        && entry.initial_exec_command_active.load(Ordering::Acquire)
++                        && !entry.background_request.load(Ordering::Acquire)
++                })
++                .min_by_key(|entry| entry.process_id)
++            else {
++                return false;
++            };
++
++            entry.background_source = source;
++            entry.background_request.store(true, Ordering::Release);
++            Arc::clone(&entry.background_notify)
++        };
++
++        notify.notify_waiters();
++        true
++    }
++
+     pub(crate) async fn terminate_process(&self, process_id: i32) -> bool {
+         let (process, already_exited) = {
+             let store = self.process_store.lock().await;
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index 096cbe0..d05760e 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -274,6 +274,8 @@ async fn failed_initial_end_for_unstored_process_uses_fallback_output() {
+         hook_command: "echo before".to_string(),
+         process_id: 123,
+         yield_time_ms: 1000,
++        run_in_background: false,
++        background_source: crate::unified_exec::BackgroundTransitionSource::Timeout,
+         max_output_tokens: None,
+         #[allow(deprecated)]
+         cwd: turn.cwd.clone().into(),
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index 46aecb6..ad9d4bd 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -1790,6 +1790,9 @@ pub struct ShellCommandToolCallParams {
+     /// This is the maximum time in milliseconds that the command is allowed to run.
+     #[serde(alias = "timeout")]
+     pub timeout_ms: Option<u64>,
++    /// Whether to start the shell command as a native background terminal immediately.
++    #[serde(default)]
++    pub run_in_background: bool,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional)]
+     pub sandbox_permissions: Option<SandboxPermissions>,

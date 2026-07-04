@@ -1,0 +1,4 @@
+background-terminal/
+external-sources/
+scripts/__pycache__/
+*.pyc

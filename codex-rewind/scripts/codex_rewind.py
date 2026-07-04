@@ -14,6 +14,7 @@ import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -2392,7 +2393,7 @@ def run_appkit_gui(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
     if binary is None:
         return None
 
-    input_path = Path(f"/tmp/codex-rewind-appkit-{os.getpid()}-{int(time.time() * 1000)}.json")
+    input_path = Path(tempfile.gettempdir()) / f"codex-rewind-appkit-{os.getpid()}-{int(time.time() * 1000)}.json"
     payload = {
         "targets": [
             {
