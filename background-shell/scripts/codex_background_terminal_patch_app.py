@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fail-closed controller for Codex App background-shell patching.
 
-This script intentionally starts from a small, auditable baseline.  Its first
-job is to prove that a clean Codex App source exists and that all later writes
-target a user-owned copy, never /Applications/Codex.app.
+This script targets the installed official Codex.app in /Applications.
+It still keeps the existing clean-source, ASAR integrity, launch, screenshot,
+and verification gates so failed hooks stop before being reported as success.
 """
 
 from __future__ import annotations
@@ -35,7 +35,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 RESOURCE_ROOT = SCRIPT_DIR.parent
 BACKGROUND_TERMINAL_ROOT = RESOURCE_ROOT / "background-terminal"
 SYSTEM_APP = Path("/Applications/Codex.app")
-DEFAULT_USER_APP = HOME / "Applications" / "Codex.app"
+PATCH_TARGET_APP = SYSTEM_APP
+# Kept as a compatibility alias for existing report keys and helper names.
+DEFAULT_USER_APP = PATCH_TARGET_APP
 DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
@@ -61,12 +63,7 @@ TERMINATE_BG_NATIVE_METHOD = "thread/backgroundTerminals/terminate"
 APP_CONTROL_MARKER = "codex-background-terminal-app-control"
 APP_CONTROL_DIR = BACKGROUND_TERMINAL_ROOT / "app-control"
 APP_CONTROL_MAIN_REL = ".vite/build/main-z6HVz-xR.js"
-try:
-    APP_CONTROL_JS_PATH_EXPR = "s.default.join(o.default.homedir()," + ",".join(
-        json.dumps(part) for part in APP_CONTROL_DIR.relative_to(HOME).parts
-    ) + ")"
-except ValueError:
-    APP_CONTROL_JS_PATH_EXPR = json.dumps(str(APP_CONTROL_DIR))
+APP_CONTROL_JS_PARTS = ",".join(json.dumps(part) for part in APP_CONTROL_DIR.relative_to(HOME).parts)
 
 OLD_PATCH_MARKERS = (
     b"__codexBackgroundTerminal",
@@ -229,7 +226,7 @@ def path_is_user_writable_app(path: Path) -> bool:
     except FileNotFoundError:
         resolved = path
     if is_system_app(resolved):
-        return False
+        return True
     try:
         resolved.relative_to(HOME)
     except ValueError:
@@ -586,7 +583,7 @@ def status_report() -> dict[str, Any]:
     source_candidates = [analyze_app(SYSTEM_APP, role="system-app")]
     for app in mounted_codex_apps():
         source_candidates.append(analyze_app(app, role="mounted-dmg-app"))
-    user_copy = analyze_app(DEFAULT_USER_APP, role="default-user-copy") if DEFAULT_USER_APP.exists() else None
+    patch_target = analyze_app(DEFAULT_USER_APP, role="patch-target-app") if DEFAULT_USER_APP.exists() else None
     clean = [candidate for candidate in source_candidates if candidate.get("cleanSourceOk")]
     selected_source = clean[0] if clean else None
     fatal_reason = None
@@ -601,7 +598,10 @@ def status_report() -> dict[str, Any]:
         "selectedCleanSource": selected_source,
         "sourceCandidates": source_candidates,
         "dmgCandidates": dmg_candidates(),
-        "defaultUserCopy": user_copy,
+        "patchTargetApp": patch_target,
+        "patchTargetAppPath": str(DEFAULT_USER_APP),
+        # Compatibility fields for older report consumers.
+        "defaultUserCopy": patch_target,
         "defaultUserCopyPath": str(DEFAULT_USER_APP),
     }
 
@@ -622,19 +622,28 @@ def prepare_user_copy(*, yes: bool) -> dict[str, Any]:
     source = require_clean_source(report)
     source_path = Path(str(source["path"]))
     if is_system_app(DEFAULT_USER_APP):
-        raise ControllerError("patch-target-not-user-copy", "Default copy path resolved to the system app.")
+        target = analyze_app(DEFAULT_USER_APP, role="official-patch-target")
+        return {
+            "ok": target.get("exists") is True and target.get("asarIntegrityOk") is not False,
+            "source": source,
+            "stopUserApp": {"attempted": False, "remainingPids": []},
+            "backupPath": None,
+            "prepared": target,
+            "skipped": True,
+            "reason": "official-app-target-already-installed",
+        }
     if not yes:
-        raise ControllerError("confirmation-required", "Pass --yes to replace the user Codex copy.")
+        raise ControllerError("confirmation-required", "Pass --yes to replace the configured Codex.app target.")
     DEFAULT_USER_APP.parent.mkdir(parents=True, exist_ok=True)
     stop_report = stop_user_app(DEFAULT_USER_APP, timeout=10) if DEFAULT_USER_APP.exists() else {"attempted": False, "remainingPids": []}
     if stop_report.get("remainingPids"):
-        raise ControllerError("app-stop-failed", "User Codex copy could not be stopped before replacement.", details=stop_report)
+        raise ControllerError("app-stop-failed", "Configured Codex.app target could not be stopped before replacement.", details=stop_report)
     backup_path = None
     if DEFAULT_USER_APP.exists():
         backup_path = DEFAULT_USER_APP.with_name(f"Codex.old-{int(time.time())}.app")
         DEFAULT_USER_APP.rename(backup_path)
     shutil.copytree(source_path, DEFAULT_USER_APP, symlinks=True)
-    copied = analyze_app(DEFAULT_USER_APP, role="prepared-user-copy")
+    copied = analyze_app(DEFAULT_USER_APP, role="prepared-codex-app-target")
     return {
         "ok": copied.get("exists") is True and copied.get("isUserWritableTarget") is True,
         "source": source,
@@ -700,7 +709,7 @@ def self_test() -> dict[str, Any]:
     def check(name: str, condition: bool) -> None:
         checks.append({"name": name, "ok": bool(condition)})
 
-    check("default user app is not the system app", not is_system_app(DEFAULT_USER_APP))
+    check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
     check("auto threshold is 450 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 450)
     check("leading sleep detected", is_leading_sleep("sleep 10"))
     check("leading sleep followed by shell op detected", is_leading_sleep("sleep 10 && echo done"))
@@ -1218,13 +1227,13 @@ def capture_screenshot_until_ready(
 def launch_verify(*, timeout: float) -> dict[str, Any]:
     app = DEFAULT_USER_APP
     started_at = current_millis()
-    target = analyze_app(app, role="launch-target-user-copy") if app.exists() else {"exists": False, "path": str(app)}
+    target = analyze_app(app, role="launch-target-codex-app") if app.exists() else {"exists": False, "path": str(app)}
     failures: list[str] = []
     warnings: list[str] = []
     if not target.get("exists"):
-        failures.append("patch-target-not-user-copy")
-    if target.get("isSystemApp") or not target.get("isUserWritableTarget"):
-        failures.append("patch-target-not-user-copy")
+        failures.append("patch-target-missing")
+    if not target.get("isUserWritableTarget"):
+        failures.append("patch-target-not-supported")
     if target.get("bundleId") not in (APP_BUNDLE_ID, None):
         failures.append("bundle-id-mismatch")
     if target.get("oldPatchMarkers"):
@@ -1251,7 +1260,7 @@ def launch_verify(*, timeout: float) -> dict[str, Any]:
     process_tree = process_wait.get("processTree") if isinstance(process_wait.get("processTree"), dict) else {}
     process_pids = {int(pid) for pid in process_tree.get("pids", [])}
     if process_pids and not process_tree.get("targetPathMatched"):
-        failures.append("launched-target-not-user-copy")
+        failures.append("launched-target-not-configured-codex-app")
 
     window_info = {"ok": False, "reason": "process-not-found", "windows": []}
     codex_window = None
@@ -1273,7 +1282,7 @@ def launch_verify(*, timeout: float) -> dict[str, Any]:
     if process_wait.get("ok") and not process_pids:
         failures.append("app-process-exited")
     if process_pids and codex_window is None:
-        failures.append("launched-window-not-user-copy")
+        failures.append("launched-window-not-configured-codex-app")
     if dialog_signals:
         failures.append("keychain-password-required")
 
@@ -1289,7 +1298,7 @@ def launch_verify(*, timeout: float) -> dict[str, Any]:
 
     visual_evidence = {
         "requiresManualInspection": True,
-        "manualInspectionInstruction": "确认截图显示用户副本 Codex 主窗口已正常打开，无加载卡死、空白、可见错误或钥匙串密码框。",
+        "manualInspectionInstruction": "确认截图显示目标 Codex App 主窗口已正常打开，无加载卡死、空白、可见错误或钥匙串密码框。",
         "automatedSignals": {
             "windowFound": codex_window is not None,
             "windowId": screenshot.get("windowId"),
@@ -1517,7 +1526,7 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
             "target": str(app_paths(app)["codex"]),
             "type": "binary-replace",
             "source": str(BUILT_CODEX_BINARY),
-            "purpose": "Install the patched native binary into the user Codex copy only.",
+            "purpose": "Install the patched native binary into the configured Codex.app target.",
         },
         {
             "name": "ctrl-b-ui-binding",
@@ -1540,7 +1549,7 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
             "target": APP_CONTROL_MAIN_REL,
             "type": "asar-text-replace",
             "marker": APP_CONTROL_MARKER,
-            "purpose": "Allow the verification controller to ask the running Codex App user copy to start real local threads/turns and query native background-terminal state.",
+            "purpose": "Allow the verification controller to ask the running Codex App target to start real local threads/turns and query native background-terminal state.",
         },
         {
             "name": "package-json-framework-marker",
@@ -1609,14 +1618,14 @@ def build_native_binary() -> dict[str, Any]:
 
 
 def install_native_binary(app: Path, build_step: dict[str, Any]) -> dict[str, Any]:
-    if is_system_app(app) or not path_is_user_writable_app(app):
-        raise ControllerError("patch-target-not-user-copy", "Native binary install target must be the user Codex copy.")
+    if not path_is_user_writable_app(app):
+        raise ControllerError("patch-target-not-supported", "Native binary install target must be the configured Codex.app target.")
     source = Path(str(build_step["binary"]))
     target = app_paths(app)["codex"]
     if not source.exists() or not source.is_file():
         raise ControllerError("native-build-missing", "Built Codex native binary is missing.", details={"source": str(source)})
     if not target.exists():
-        raise ControllerError("native-install-target-missing", "User copy codex binary is missing.", details={"target": str(target)})
+        raise ControllerError("native-install-target-missing", "Target Codex native binary is missing.", details={"target": str(target)})
     backup_dir = REPORT_ROOT / CHANGE_ID / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / f"codex-{current_millis()}"
@@ -1956,20 +1965,20 @@ def scan_app_control_bridge(app: Path) -> dict[str, Any]:
             "requestActionCount": main_text.count("c.action==="),
         },
         "syntaxCheck": syntax_check,
-        "note": "The bridge is a fail-closed verification harness in the user copy. It starts real app-server threads/turns and reads native background-terminal state; it does not fabricate background tasks.",
+        "note": "The bridge is a fail-closed verification harness in the configured Codex App target. It starts real app-server threads/turns and reads native background-terminal state; it does not fabricate background tasks.",
     }
 
 
 def scenario_report(scenario: str) -> dict[str, Any]:
     test = run_native_scenario_test(scenario)
     app = DEFAULT_USER_APP
-    target = analyze_app(app, role=f"scenario-{scenario}-user-copy") if app.exists() else {"exists": False, "path": str(app)}
+    target = analyze_app(app, role=f"scenario-{scenario}-codex-app-target") if app.exists() else {"exists": False, "path": str(app)}
     failures: list[str] = []
     warnings: list[str] = []
     if not test.get("ok"):
         failures.append("native-scenario-test-failed")
-    if not target.get("exists") or target.get("isSystemApp") or not target.get("isUserWritableTarget"):
-        failures.append("patch-target-not-user-copy")
+    if not target.get("exists") or not target.get("isUserWritableTarget"):
+        failures.append("patch-target-not-supported")
     if target.get("nativePatchMarkersOk") is not True:
         failures.append("native-patch-markers-missing")
     if target.get("oldPatchMarkers"):
@@ -2018,7 +2027,7 @@ def scenario_report(scenario: str) -> dict[str, Any]:
         "changeId": CHANGE_ID,
         "generatedAtMs": current_millis(),
         "scenario": scenario,
-        "level": "native-code-and-user-copy-binary",
+        "level": "native-code-and-codex-app-target-binary",
         "nativeTest": test,
         "targetApp": target,
         "ctrlBShortcutConflicts": shortcut_conflicts,
@@ -2052,9 +2061,9 @@ def strict_window_screenshot_check(launch_payload: dict[str, Any]) -> dict[str, 
     if not screenshot.get("windowId") or screenshot.get("windowId") != window.get("windowId"):
         failures.append("screenshot-window-id-mismatch")
     if window.get("ownerPid") not in process_pids:
-        failures.append("window-owner-not-in-user-copy-process-tree")
+        failures.append("window-owner-not-in-target-process-tree")
     if process_tree.get("executablePath") != expected_executable:
-        failures.append("launch-executable-not-user-copy")
+        failures.append("launch-executable-not-configured-codex-app")
     if process_tree.get("targetPathMatched") is not True:
         failures.append("launch-target-path-not-matched")
     if screenshot.get("visualReady") is not True:
@@ -2107,7 +2116,7 @@ def capture_ui_step_screenshot(
         if not process_pids:
             failures.append("app-process-not-found")
         if process_tree.get("executablePath") != expected_executable:
-            failures.append("launch-executable-not-user-copy")
+            failures.append("launch-executable-not-configured-codex-app")
         if process_tree.get("targetPathMatched") is not True:
             failures.append("launch-target-path-not-matched")
         if codex_window is None:
@@ -2127,7 +2136,7 @@ def capture_ui_step_screenshot(
         if codex_window and screenshot.get("windowId") != codex_window.get("windowId"):
             failures.append("screenshot-window-id-mismatch")
         if codex_window and codex_window.get("ownerPid") not in process_pids:
-            failures.append("window-owner-not-in-user-copy-process-tree")
+            failures.append("window-owner-not-in-target-process-tree")
         if screenshot.get("visualReady") is not True:
             failures.append("screenshot-not-visually-ready")
         if (screenshot.get("visualStats") or {}).get("likelyLoadingOrBlank") is True:
@@ -2990,7 +2999,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         "mainTerminal": terminal,
         "startedAtMs": started_at,
         "finishedAtMs": current_millis(),
-        "note": "This uses app-server thread/start and turn/start inside the running Codex App user copy, then combines native list checks, bounded renderer DOM checks, and strict window screenshots.",
+        "note": "This uses app-server thread/start and turn/start inside the running configured Codex App target, then combines native list checks, bounded renderer DOM checks, and strict window screenshots.",
     }
 
 
@@ -2998,22 +3007,22 @@ def old_implementation_clearance_report(
     status_payload: dict[str, Any] | None,
     apply_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    user_copy = analyze_app(DEFAULT_USER_APP, role="full-verify-user-copy")
+    patch_target = analyze_app(DEFAULT_USER_APP, role="full-verify-codex-app-target")
     selected_clean_source = status_payload.get("selectedCleanSource") if isinstance(status_payload, dict) else None
     target_after = apply_payload.get("targetAfter") if isinstance(apply_payload, dict) else None
     if not isinstance(target_after, dict):
-        target_after = user_copy
+        target_after = patch_target
 
     checks = {
         "cleanSourceSelected": isinstance(selected_clean_source, dict)
         and bool(selected_clean_source.get("cleanSourceOk")),
         "cleanSourceOldMarkersAbsent": isinstance(selected_clean_source, dict)
         and not selected_clean_source.get("oldPatchMarkers"),
-        "userCopyIsPatchTarget": user_copy.get("exists") is True
-        and user_copy.get("isUserWritableTarget") is True
-        and user_copy.get("isSystemApp") is False,
-        "userCopyOldMarkersAbsent": not target_after.get("oldPatchMarkers"),
-        "userCopyAsarIntegrityOk": target_after.get("asarIntegrityOk") is True,
+        "targetAppIsPatchTarget": patch_target.get("exists") is True
+        and patch_target.get("isUserWritableTarget") is True
+        and str(patch_target.get("path")) == str(DEFAULT_USER_APP),
+        "targetAppOldMarkersAbsent": not target_after.get("oldPatchMarkers"),
+        "targetAppAsarIntegrityOk": target_after.get("asarIntegrityOk") is True,
         "nativeMarkersPresent": target_after.get("nativePatchMarkersOk") is True,
     }
     return {
@@ -3061,20 +3070,20 @@ def full_verify(*, launch_timeout: float) -> dict[str, Any]:
             payload = {"ok": False, "reason": "unexpected-exception", "message": str(exc)}
         return add_step(test_id, name, payload)
 
-    status_payload = run_step("T-1", "clean-source-and-user-copy-status", status_report)
+    status_payload = run_step("T-1", "clean-source-and-target-status", status_report)
     analyze_payload = run_step("T-1", "native-interface-analysis", analyze_native)
-    user_copy = status_payload.get("defaultUserCopy") if isinstance(status_payload, dict) else None
-    needs_clean_user_copy = (
-        not isinstance(user_copy, dict)
-        or user_copy.get("exists") is not True
-        or bool(user_copy.get("oldPatchMarkers"))
-        or user_copy.get("asarIntegrityOk") is False
+    patch_target = status_payload.get("patchTargetApp") if isinstance(status_payload, dict) else None
+    needs_target_prepare = (
+        not isinstance(patch_target, dict)
+        or patch_target.get("exists") is not True
+        or bool(patch_target.get("oldPatchMarkers"))
+        or patch_target.get("asarIntegrityOk") is False
     )
     restore_payload: dict[str, Any] | None = None
-    if needs_clean_user_copy:
-        restore_payload = run_step("T-1", "restore-clean-user-copy-before-apply", lambda: prepare_user_copy(yes=True))
-    apply_payload = run_step("T-1", "apply-patch-to-user-copy", lambda: apply_patch_to_user_copy(yes=True))
-    launch_payload = run_step("T0", "launch-user-copy-and-capture-window", lambda: launch_verify(timeout=launch_timeout))
+    if needs_target_prepare:
+        restore_payload = run_step("T-1", "prepare-codex-app-target-before-apply", lambda: prepare_user_copy(yes=True))
+    apply_payload = run_step("T-1", "apply-patch-to-codex-app-target", lambda: apply_patch_to_user_copy(yes=True))
+    launch_payload = run_step("T0", "launch-codex-app-target-and-capture-window", lambda: launch_verify(timeout=launch_timeout))
 
     screenshot_checks: list[dict[str, Any]] = []
     captured_ui_steps: list[str] = []
@@ -3627,7 +3636,7 @@ def app_control_bridge_js() -> str:
         "if(globalThis.__cbtAppControlStarted)return;"
         "globalThis.__cbtAppControlStarted=!0;"
         "let n=!1;"
-        f"const r={APP_CONTROL_JS_PATH_EXPR},"
+        f"const r=s.default.join(o.default.homedir(),{APP_CONTROL_JS_PARTS}),"
         "i=async(e,t)=>{await d.default.mkdir(r,{recursive:!0});await d.default.writeFile(s.default.join(r,e),JSON.stringify({...t,generatedAtMs:Date.now()},null,2),`utf8`)},"
         "a=()=>e.appServerConnectionRegistry.getConnection(B),"
         "o2=async(e,t)=>{let n=e.windowManager.getPrimaryWindow();"
@@ -3943,19 +3952,19 @@ def update_info_plist_asar_integrity(app: Path, asar_header_sha256: str) -> dict
 
 def apply_patch_to_user_copy(*, yes: bool) -> dict[str, Any]:
     if not yes:
-        raise ControllerError("confirmation-required", "Pass --yes to patch the user Codex copy.")
+        raise ControllerError("confirmation-required", "Pass --yes to patch the configured Codex.app target.")
     app = DEFAULT_USER_APP
-    if is_system_app(app) or not path_is_user_writable_app(app):
-        raise ControllerError("patch-target-not-user-copy", "Patch target must be the user Codex copy.")
+    if not path_is_user_writable_app(app):
+        raise ControllerError("patch-target-not-supported", "Patch target must be the configured Codex.app target.")
     target_before = analyze_app(app, role="patch-target-before")
     if not target_before.get("exists"):
-        raise ControllerError("patch-target-not-user-copy", "User Codex copy does not exist.", details=target_before)
+        raise ControllerError("patch-target-missing", "Configured Codex.app target does not exist.", details=target_before)
     if target_before.get("oldPatchMarkers"):
         raise ControllerError("old-patch-not-removed", "Old patch markers are still present.", details=target_before)
     build_step = build_native_binary()
     stop_report = stop_user_app(app, timeout=10)
     if stop_report.get("remainingPids"):
-        raise ControllerError("app-stop-failed", "User Codex copy could not be stopped before patch.", details=stop_report)
+        raise ControllerError("app-stop-failed", "Configured Codex.app target could not be stopped before patch.", details=stop_report)
     native_step = install_native_binary(app, build_step)
     if not native_step.get("ok"):
         raise ControllerError("native-install-failed", "Patched native binary was not installed correctly.", details=native_step)
@@ -4177,15 +4186,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Codex App background shell patch controller")
     parser.add_argument("--json", action="store_true", help="Print JSON output")
     parser.add_argument("--write-report", action="store_true", help="Write a report under ignored artifacts")
-    parser.add_argument("--yes", action="store_true", help="Allow replacing the user app copy")
-    parser.add_argument("--launch-timeout", type=float, default=60.0, help="Seconds to wait for the user app copy")
+    parser.add_argument("--yes", action="store_true", help="Allow modifying the configured Codex.app target")
+    parser.add_argument("--launch-timeout", type=float, default=60.0, help="Seconds to wait for the configured Codex.app target")
     actions = parser.add_mutually_exclusive_group()
-    actions.add_argument("--status", action="store_true", help="Inspect clean source and user copy state")
+    actions.add_argument("--status", action="store_true", help="Inspect clean source and configured Codex.app target state")
     actions.add_argument("--self-test", action="store_true", help="Run controller self-tests")
-    actions.add_argument("--prepare-user-copy", action="store_true", help="Create a fresh user copy from clean source")
+    actions.add_argument("--prepare-user-copy", action="store_true", help="Validate the configured official Codex.app target from clean source")
     actions.add_argument("--launch-verify", action="store_true", help="Verify launched app/window ownership")
     actions.add_argument("--analyze-native", action="store_true", help="Analyze native Codex interfaces and ASAR layout")
-    actions.add_argument("--apply-patch", action="store_true", help="Apply audited ASAR patch steps to the user copy")
+    actions.add_argument("--apply-patch", action="store_true", help="Apply audited ASAR patch steps to the configured Codex.app target")
     actions.add_argument("--scenario", choices=sorted(SCENARIO_TESTS), help="Run a background-terminal scenario verification")
     actions.add_argument("--full-verify", action="store_true", help="Run the full fail-closed verification matrix")
     return parser

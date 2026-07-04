@@ -7,7 +7,7 @@
 - `command-approval-hook/`：命令检查 hook。拦截命中的 Bash 命令短语，弹出 macOS 确认窗口，用户选择 `Allow` 才放行。
 - `turn-complete-notify/`：回合完成通知。Codex agent turn 完成后发送 macOS 通知，不包含 `iphone-notify` 或 Bark 推送。
 - `codex-rewind/`：`/rewind` 本地插件。为 Codex 增加会话/代码回退选择窗口，并提供 Codex.app patch 脚本。
-- `background-shell/`：Codex App background shell patch。提供用户副本 patch 控制器和 `openai/codex` Rust/native patch 文件。
+- `background-shell/`：Codex App background shell patch。提供官方 `/Applications/Codex.app` patch 控制器和 `openai/codex` Rust/native patch 文件。
 
 ## 安装位置
 

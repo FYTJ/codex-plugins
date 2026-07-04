@@ -4,7 +4,7 @@
 
 ## 主要文件
 
-- `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、创建用户副本、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
+- `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、验证官方 Codex.app 目标、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
 - `scripts/openai-codex-background-shell.patch`：对 `https://github.com/openai/codex` 的 Rust/native patch。控制器构建 native binary 时要求该 patch 已应用到本地源码副本。
 - `bin/codex-background-shell-patch-app`：可符号链接到 `~/.codex/bin` 的命令入口。
 - `.gitignore`：忽略运行时生成的 `background-terminal/` 报告目录、`external-sources/` 源码 checkout 和 Python 缓存。
@@ -49,19 +49,19 @@ git apply ../../scripts/openai-codex-background-shell.patch
 ~/.codex/bin/codex-background-shell-patch-app --self-test --json
 ```
 
-检查 clean source 和用户副本状态：
+检查 clean source 和官方 Codex.app 目标状态：
 
 ```bash
 ~/.codex/bin/codex-background-shell-patch-app --status --json
 ```
 
-从 clean source 创建用户目录副本：
+验证官方 Codex.app 目标：
 
 ```bash
 ~/.codex/bin/codex-background-shell-patch-app --prepare-user-copy --yes --json --write-report
 ```
 
-应用 patch 到用户副本：
+应用 patch 到官方 Codex.app 目标：
 
 ```bash
 ~/.codex/bin/codex-background-shell-patch-app --apply-patch --yes --json --write-report
@@ -75,13 +75,13 @@ git apply ../../scripts/openai-codex-background-shell.patch
 
 ## 行为边界
 
-控制器只 patch 用户目录副本：
+控制器 patch 当前安装的官方 Codex.app：
 
 ```text
-/Users/<you>/Applications/Codex.app
+/Applications/Codex.app
 ```
 
-`/Applications/Codex.app` 只作为 clean source 候选，不作为 patch 目标。每次 patch 后由当前 CLI 会话重启用户副本，以避免 App 自身重启打断调试 loop。
+`/Applications/Codex.app` 同时作为 clean source 候选和 patch 目标。每次 patch 后由当前 CLI 会话负责停止、签名验证、重启和截图检查，避免 App 自身重启打断调试 loop。
 
 验证报告默认写入：
 
