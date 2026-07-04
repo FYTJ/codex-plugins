@@ -1,12 +1,13 @@
 # Codex 本地配置
 
-这个目录整理了三组本机 Codex 扩展配置。每组功能都放在独立子目录中，便于直接发布到 GitHub 后按需安装。
+这个目录整理了四组本机 Codex 扩展配置。每组功能都放在独立子目录中，便于直接发布到 GitHub 后按需安装。
 
 ## 目录结构
 
 - `command-approval-hook/`：命令检查 hook。拦截命中的 Bash 命令短语，弹出 macOS 确认窗口，用户选择 `Allow` 才放行。
 - `turn-complete-notify/`：回合完成通知。Codex agent turn 完成后发送 macOS 通知，不包含 `iphone-notify` 或 Bark 推送。
 - `codex-rewind/`：`/rewind` 本地插件。为 Codex 增加会话/代码回退选择窗口，并提供 Codex.app patch 脚本。
+- `background-shell/`：Codex App background shell patch。提供用户副本 patch 控制器和 `openai/codex` Rust/native patch 文件。
 
 ## 安装位置
 
@@ -22,16 +23,19 @@ cp turn-complete-notify/notify_turn_ended.py ~/.codex/hooks/
 cp turn-complete-notify/notify.example.toml ~/.codex/notify.toml
 
 cp -R codex-rewind ~/.codex/plugins/codex-rewind
+cp -R background-shell ~/.codex/plugins/background-shell
 ln -sf ~/.codex/plugins/codex-rewind/bin/codex-rewind ~/.codex/bin/codex-rewind
 ln -sf ~/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app ~/.codex/bin/codex-rewind-patch-app
+ln -sf ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app ~/.codex/bin/codex-background-shell-patch-app
 
 chmod +x ~/.codex/hooks/block_blacklisted_commands.py
 chmod +x ~/.codex/hooks/notify_turn_ended.py
 chmod +x ~/.codex/plugins/codex-rewind/bin/codex-rewind
 chmod +x ~/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app
+chmod +x ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app
 ```
 
-如果 `~/.codex/plugins/codex-rewind` 已存在，先备份旧目录再覆盖，避免把新目录嵌套复制到旧目录里。
+如果 `~/.codex/plugins/codex-rewind` 或 `~/.codex/plugins/background-shell` 已存在，先备份旧目录再覆盖，避免把新目录嵌套复制到旧目录里。
 
 ## `config.toml` 配置
 
