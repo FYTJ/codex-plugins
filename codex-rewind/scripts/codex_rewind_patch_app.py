@@ -272,7 +272,9 @@ def patch_conversation_intercept(root: Path) -> Path:
     helper_marker = "__codexRewindPatchV2"
     submit_pattern = re.compile(
         r"(async function [A-Za-z_$][\w$]*\(([^)]*)\)\{)let(\{beforeSendRequest:[A-Za-z_$][\w$]*,"
-        r"inheritThreadSettings:[A-Za-z_$][\w$]*=!0,\.\.\.([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*))([;,])"
+        r"inheritThreadSettings:[A-Za-z_$][\w$]*=!0,"
+        r"(?:[A-Za-z_$][\w$]*:[A-Za-z_$][\w$]*(?:=[^,{}]+)?,)*"
+        r"\.\.\.([A-Za-z_$][\w$]*)\}=([A-Za-z_$][\w$]*))([;,])"
     )
 
     matches: list[tuple[Path, re.Match[str]]] = []
