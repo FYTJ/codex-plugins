@@ -44,9 +44,10 @@ REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
 UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
-RUSTC = RUST_TOOLCHAIN / "rustc"
-CARGO = RUST_TOOLCHAIN / "cargo"
+RUST_TOOLCHAIN = os.environ.get("CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN")
+RUST_TOOLCHAIN_DIR = Path(RUST_TOOLCHAIN).expanduser() if RUST_TOOLCHAIN else None
+RUSTC = Path(os.environ.get("RUSTC", str((RUST_TOOLCHAIN_DIR / "rustc") if RUST_TOOLCHAIN_DIR else "rustc"))).expanduser()
+CARGO = Path(os.environ.get("CARGO", str((RUST_TOOLCHAIN_DIR / "cargo") if RUST_TOOLCHAIN_DIR else "cargo"))).expanduser()
 BUILT_CODEX_BINARY = CODEX_RS / "target" / "release" / "codex"
 NATIVE_PATCH_FILE = Path(__file__).with_name("openai-codex-background-shell.patch")
 CHANGE_ID = "change-20260704-034011"
@@ -64,6 +65,10 @@ APP_CONTROL_MARKER = "codex-background-terminal-app-control"
 APP_CONTROL_DIR = BACKGROUND_TERMINAL_ROOT / "app-control"
 APP_CONTROL_MAIN_REL = ".vite/build/main-z6HVz-xR.js"
 APP_CONTROL_JS_PARTS = ",".join(json.dumps(part) for part in APP_CONTROL_DIR.relative_to(HOME).parts)
+DMG_MOUNT_DIR = Path(tempfile.gettempdir()) / "codex-dmg-mount"
+MACOS_VOLUMES_DIR = Path(
+    os.environ.get("CODEX_BACKGROUND_SHELL_VOLUMES_DIR", str(Path(Path.cwd().anchor) / "Volumes"))
+).expanduser()
 
 OLD_PATCH_MARKERS = (
     b"__codexBackgroundTerminal",
@@ -550,7 +555,7 @@ def analyze_app(app: Path, *, role: str) -> dict[str, Any]:
 
 def mounted_codex_apps() -> list[Path]:
     candidates: list[Path] = []
-    volumes = [Path("/Volumes"), Path("/private/tmp/codex-dmg-mount")]
+    volumes = [MACOS_VOLUMES_DIR, DMG_MOUNT_DIR]
     for volume in volumes:
         if not volume.exists():
             continue
@@ -1567,21 +1572,28 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
 
 
 def cargo_env() -> dict[str, str]:
+    path = os.environ.get("PATH", "")
+    if RUST_TOOLCHAIN_DIR is not None:
+        path = f"{RUST_TOOLCHAIN_DIR}:{path}"
     return {
         "CODEX_SANDBOX": "",
         "RUST_MIN_STACK": str(8 * 1024 * 1024),
         "RUSTC": str(RUSTC),
-        "PATH": f"{RUST_TOOLCHAIN}:{os.environ.get('PATH', '')}",
+        "PATH": path,
     }
+
+
+def executable_available(path: Path) -> bool:
+    return path.exists() or shutil.which(str(path)) is not None
 
 
 def build_native_binary() -> dict[str, Any]:
     if not CODEX_RS.exists():
         raise ControllerError("native-source-missing", "Codex Rust source checkout was not found.", details={"path": str(CODEX_RS)})
-    if not CARGO.exists() or not RUSTC.exists():
+    if not executable_available(CARGO) or not executable_available(RUSTC):
         raise ControllerError(
             "native-toolchain-missing",
-            "Expected Rust 1.95 toolchain was not found.",
+            "Rust toolchain was not found. Put cargo/rustc on PATH or set CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN.",
             details={"cargo": str(CARGO), "rustc": str(RUSTC)},
         )
     before_hash = sha256(BUILT_CODEX_BINARY)
@@ -2681,7 +2693,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
             "finishedAtMs": current_millis(),
         }
 
-    main_command = "/bin/sh -lc 'printf \"bt-ui-output-%s\\n\" \"$$\"; sleep 120; printf \"bt-ui-end\\n\"'"
+    main_command = "sh -lc 'printf \"bt-ui-output-%s\\n\" \"$$\"; sleep 120; printf \"bt-ui-end\\n\"'"
     start_response = add_check(
         "thread-start-real-ui-conversation",
         app_control_request(
@@ -2835,8 +2847,8 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T6",
     )
 
-    busy_command = "/bin/sh -lc 'printf \"bt-busy-start\\n\"; sleep 30; printf \"bt-busy-end\\n\"'"
-    busy_foreground_command = "/bin/sh -lc 'sleep 45; printf \"bt-busy-foreground-done\\n\"'"
+    busy_command = "sh -lc 'printf \"bt-busy-start\\n\"; sleep 30; printf \"bt-busy-end\\n\"'"
+    busy_foreground_command = "sh -lc 'sleep 45; printf \"bt-busy-foreground-done\\n\"'"
     busy_response = add_check(
         "busy-wakeup-start-turn",
         app_control_request(
@@ -2901,7 +2913,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T8",
     )
 
-    stop_command = "/bin/sh -lc 'printf \"bt-stop-start\\n\"; sleep 90; printf \"bt-stop-end\\n\"'"
+    stop_command = "sh -lc 'printf \"bt-stop-start\\n\"; sleep 90; printf \"bt-stop-end\\n\"'"
     stop_response = add_check(
         "stop-background-terminal-start-turn",
         app_control_request(
@@ -2951,7 +2963,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T9",
     )
 
-    restart_command = "/bin/sh -lc 'printf \"bt-restart-start\\n\"; sleep 90; printf \"bt-restart-end\\n\"'"
+    restart_command = "sh -lc 'printf \"bt-restart-start\\n\"; sleep 90; printf \"bt-restart-end\\n\"'"
     restart_response = add_check(
         "restart-background-terminal-through-real-turn",
         app_control_request(

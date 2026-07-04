@@ -11,11 +11,11 @@
 
 ## 安装
 
-下面假设本仓库位于 `~/Documents/codex-config`。
+在本仓库根目录运行安装命令。
 
 ```bash
 mkdir -p ~/.codex/plugins ~/.codex/bin
-cp -R ~/Documents/codex-config/background-shell ~/.codex/plugins/background-shell
+cp -R background-shell ~/.codex/plugins/background-shell
 ln -sf ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app ~/.codex/bin/codex-background-shell-patch-app
 chmod +x ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app
 ```
@@ -32,14 +32,14 @@ cd external-sources/openai-codex
 git apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-控制器默认使用 Rust 1.95 toolchain：
+控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 
 ```text
-~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/cargo
-~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/rustc
+cargo
+rustc
 ```
 
-如果本机没有该 toolchain，需要先安装对应 Rust 工具链，或按脚本里的 `RUST_TOOLCHAIN` 常量调整本地副本。
+如果需要固定工具链目录，可在运行前设置 `CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN` 指向包含 `cargo` 和 `rustc` 的目录；也可以分别设置 `CARGO` 和 `RUSTC`。
 
 ## 常用命令
 
