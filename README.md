@@ -5,7 +5,6 @@
 - `command-approval-hook/`：在 Bash 工具执行前检查命令黑名单，命中时弹出 macOS 审批窗口。
 - `codex-rewind/`：提供 `/rewind`，支持选择历史对话点并回退会话、工作区文件，或两者同时回退。
 - `background-shell/`：提供 Codex App background shell patch 控制器和 `openai/codex` Rust/native patch 文件。
-- `turn-complete-notify/`：可选的 Codex turn 完成后 macOS 本机通知脚本。
 
 详细用法见 [docs/USAGE.md](docs/USAGE.md)。
 
@@ -38,10 +37,6 @@
 │   ├── scripts/
 │   ├── config.toml.snippet
 │   ├── hooks.example.json
-│   └── README.md
-├── turn-complete-notify/
-│   ├── notify_turn_ended.py
-│   ├── notify.example.toml
 │   └── README.md
 └── docs/
     └── USAGE.md
