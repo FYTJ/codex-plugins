@@ -62,12 +62,10 @@ def read_pickle_payload(buf: bytes) -> memoryview:
     if len(buf) < 4:
         raise RuntimeError("Invalid asar pickle: too short")
     payload_size = struct.unpack_from("<I", buf, 0)[0]
-    header_size = len(buf) - payload_size
-    if header_size < 4 or header_size % 4 != 0 or payload_size < 0:
+    padding_size = len(buf) - 4 - payload_size
+    if padding_size < 0 or padding_size > 3:
         raise RuntimeError("Invalid asar pickle header size")
-    if header_size + payload_size > len(buf):
-        raise RuntimeError("Invalid asar pickle payload size")
-    return memoryview(buf)[header_size : header_size + payload_size]
+    return memoryview(buf)[4 : 4 + payload_size]
 
 
 def read_pickle_uint32(buf: bytes) -> int:

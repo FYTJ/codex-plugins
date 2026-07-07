@@ -67,7 +67,9 @@ chmod +x "$HOME/.codex/plugins/codex-rewind/bin/codex-rewind-patch-app"
 rm -rf "$HOME/.codex/plugins/background-shell"
 cp -R background-shell "$HOME/.codex/plugins/background-shell"
 ln -sf "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app" "$HOME/.codex/bin/codex-background-shell-patch-app"
+ln -sf "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-current" "$HOME/.codex/bin/codex-background-shell-patch-current"
 chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app"
+chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-current"
 ```
 
 如果你不想覆盖已有的 `~/.codex/plugins/codex-rewind` 或 `~/.codex/plugins/background-shell`，先手动备份对应目录。
@@ -179,6 +181,12 @@ background shell patch 需要重新检查并按需应用：
 
 ```bash
 "$HOME/.codex/bin/codex-background-shell-patch-app" --status --json
+```
+
+若当前 Codex App bundle 已更新导致通用 ASAR 定位失效，改用当前版本兼容 wrapper，并保持 Codex 运行：
+
+```bash
+"$HOME/.codex/bin/codex-background-shell-patch-current"
 ```
 
 ## 发布边界

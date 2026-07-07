@@ -261,12 +261,10 @@ def read_pickle_payload(buffer: bytes) -> memoryview:
     if len(buffer) < 4:
         raise RuntimeError("Invalid asar pickle: too short")
     payload_size = struct.unpack_from("<I", buffer, 0)[0]
-    header_size = len(buffer) - payload_size
-    if header_size < 4 or header_size % 4 != 0:
+    padding_size = len(buffer) - 4 - payload_size
+    if padding_size < 0 or padding_size > 3:
         raise RuntimeError("Invalid asar pickle header size")
-    if header_size + payload_size > len(buffer):
-        raise RuntimeError("Invalid asar pickle payload size")
-    return memoryview(buffer)[header_size : header_size + payload_size]
+    return memoryview(buffer)[4 : 4 + payload_size]
 
 
 def read_pickle_uint32(buffer: bytes) -> int:
@@ -302,7 +300,7 @@ def asar_header_hash(asar_path: Path) -> str | None:
 
 def make_pickle_payload(payload: bytes) -> bytes:
     padding = (4 - (len(payload) % 4)) % 4
-    return struct.pack("<I", len(payload)) + payload + (b"\0" * padding)
+    return struct.pack("<I", len(payload) + padding) + payload + (b"\0" * padding)
 
 
 def make_pickle_uint32(value: int) -> bytes:
@@ -3962,7 +3960,7 @@ def update_info_plist_asar_integrity(app: Path, asar_header_sha256: str) -> dict
     }
 
 
-def apply_patch_to_user_copy(*, yes: bool) -> dict[str, Any]:
+def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[str, Any]:
     if not yes:
         raise ControllerError("confirmation-required", "Pass --yes to patch the configured Codex.app target.")
     app = DEFAULT_USER_APP
@@ -3974,9 +3972,19 @@ def apply_patch_to_user_copy(*, yes: bool) -> dict[str, Any]:
     if target_before.get("oldPatchMarkers"):
         raise ControllerError("old-patch-not-removed", "Old patch markers are still present.", details=target_before)
     build_step = build_native_binary()
-    stop_report = stop_user_app(app, timeout=10)
-    if stop_report.get("remainingPids"):
-        raise ControllerError("app-stop-failed", "Configured Codex.app target could not be stopped before patch.", details=stop_report)
+    if allow_running:
+        stop_report = {
+            "attempted": False,
+            "terminatedPids": [],
+            "forcedPids": [],
+            "remainingPids": [int(item["pid"]) for item in app_processes(app)],
+            "errors": [],
+            "skippedBecauseAllowRunning": True,
+        }
+    else:
+        stop_report = stop_user_app(app, timeout=10)
+        if stop_report.get("remainingPids"):
+            raise ControllerError("app-stop-failed", "Configured Codex.app target could not be stopped before patch.", details=stop_report)
     native_step = install_native_binary(app, build_step)
     if not native_step.get("ok"):
         raise ControllerError("native-install-failed", "Patched native binary was not installed correctly.", details=native_step)
@@ -4166,7 +4174,7 @@ def command_analyze_native(args: argparse.Namespace) -> int:
 
 def command_apply_patch(args: argparse.Namespace) -> int:
     try:
-        payload = apply_patch_to_user_copy(yes=args.yes)
+        payload = apply_patch_to_user_copy(yes=args.yes, allow_running=args.allow_running)
     except ControllerError as exc:
         payload = {"ok": False, "reason": exc.reason, "message": str(exc), "details": exc.details}
     if args.write_report:
@@ -4199,6 +4207,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true", help="Print JSON output")
     parser.add_argument("--write-report", action="store_true", help="Write a report under ignored artifacts")
     parser.add_argument("--yes", action="store_true", help="Allow modifying the configured Codex.app target")
+    parser.add_argument("--allow-running", action="store_true", help="Patch without stopping a running Codex.app target")
     parser.add_argument("--launch-timeout", type=float, default=60.0, help="Seconds to wait for the configured Codex.app target")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--status", action="store_true", help="Inspect clean source and configured Codex.app target state")

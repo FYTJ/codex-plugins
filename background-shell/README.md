@@ -5,8 +5,10 @@
 ## 主要文件
 
 - `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、验证官方 Codex.app 目标、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
+- `scripts/codex_background_terminal_patch_current.py`：当前 Codex App bundle 兼容 wrapper，用于适配更新后的 ASAR 入口和 minified symbol。
 - `scripts/openai-codex-background-shell.patch`：对 `https://github.com/openai/codex` 的 Rust/native patch。控制器构建 native binary 时要求该 patch 已应用到本地源码副本。
 - `bin/codex-background-shell-patch-app`：可符号链接到 `~/.codex/bin` 的命令入口。
+- `bin/codex-background-shell-patch-current`：调用当前 Codex App 兼容 wrapper 的命令入口。
 - `.gitignore`：忽略运行时生成的 `background-terminal/` 报告目录、`external-sources/` 源码 checkout 和 Python 缓存。
 
 ## 安装
@@ -17,7 +19,9 @@
 mkdir -p ~/.codex/plugins ~/.codex/bin
 cp -R background-shell ~/.codex/plugins/background-shell
 ln -sf ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app ~/.codex/bin/codex-background-shell-patch-app
+ln -sf ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-current ~/.codex/bin/codex-background-shell-patch-current
 chmod +x ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-app
+chmod +x ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-current
 ```
 
 ## 准备 native source
@@ -64,7 +68,13 @@ rustc
 应用 patch 到官方 Codex.app 目标：
 
 ```bash
-~/.codex/bin/codex-background-shell-patch-app --apply-patch --yes --json --write-report
+~/.codex/bin/codex-background-shell-patch-app --apply-patch --yes --allow-running --json --write-report
+```
+
+当前 Codex App 版本的 ASAR/minified symbol 变化时，改用 current wrapper 应用兼容 patch：
+
+```bash
+~/.codex/bin/codex-background-shell-patch-current
 ```
 
 运行完整 fail-closed 验证：
