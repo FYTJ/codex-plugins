@@ -254,14 +254,14 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "let f=d,p;t[5]!==l||t[6]!==u||t[7]!==c||t[8]!==s.id||t[9]!==n||t[10]!==i?"
     )
     summary_after = (
-        "let f=d,[Bt,St]=(0,By.useState)([]);"
-        "(0,By.useEffect)(()=>{if(!n||i==null){St([]);return}let e=!1,t=async()=>{"
+        "let f=d,[Bt,BtSet]=(0,By.useState)([]);"
+        "(0,By.useEffect)(()=>{if(!n||i==null){BtSet([]);return}let e=!1,t=async()=>{"
         "try{let r=await "
         f"{call}(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})"
         ";if(e)return;let a=Array.isArray(r?.data)?r.data:[];"
-        "St(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
         "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
-        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}catch{e||St([])}};"
+        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}catch{e||BtSet([])}};"
         "t();let r=setInterval(t,1e3);return()=>{e=!0,clearInterval(r)}},[n,i]);"
         "Bt.length>0&&(f=[...Bt,...f.filter(e=>!Bt.some(t=>t.id===e.id||"
         "e.processId!=null&&t.processId===e.processId||"
@@ -270,6 +270,13 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     )
     summary_after_old_call = summary_after.replace(f"{call}(`{m.LIST_BG_ACTION}`", f"_n(`{m.LIST_BG_ACTION}`")
     summary_after_new_call = summary_after.replace(f"{call}(`{m.LIST_BG_ACTION}`", f"Bo(`{m.LIST_BG_ACTION}`")
+    summary_after_shadowed_state = summary_after.replace("[Bt,BtSet]", "[Bt,St]").replace("BtSet(", "St(")
+    summary_after_shadowed_state_old_call = summary_after_shadowed_state.replace(
+        f"{call}(`{m.LIST_BG_ACTION}`", f"_n(`{m.LIST_BG_ACTION}`"
+    )
+    summary_after_shadowed_state_new_call = summary_after_shadowed_state.replace(
+        f"{call}(`{m.LIST_BG_ACTION}`", f"Bo(`{m.LIST_BG_ACTION}`"
+    )
 
     stop_old_before = (
         "k=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
@@ -362,7 +369,17 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     stop_interactive_after = "let A=o.metrics?.pid==null&&o.process.source!==`background-terminal`,j;"
 
     replacements = [
-        ("task005-summary-native-terminal-list", [(summary_before, summary_after), (summary_after_old_call, summary_after), (summary_after_new_call, summary_after)]),
+        (
+            "task005-summary-native-terminal-list",
+            [
+                (summary_before, summary_after),
+                (summary_after_old_call, summary_after),
+                (summary_after_new_call, summary_after),
+                (summary_after_shadowed_state, summary_after),
+                (summary_after_shadowed_state_old_call, summary_after),
+                (summary_after_shadowed_state_new_call, summary_after),
+            ],
+        ),
         ("task005-native-terminal-status-running", [(status_before, status_after)]),
         ("task005-native-terminal-restart-enabled", [(missing_pid_before, missing_pid_after)]),
         ("task005-native-terminal-stop-action", [(stop_old_before, stop_old_after), (stop_new_before, stop_new_after)]),

@@ -3478,14 +3478,14 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "let f=d,p;t[5]!==l||t[6]!==u||t[7]!==c||t[8]!==s.id||t[9]!==n||t[10]!==i?"
     )
     summary_native_list_after = (
-        "let f=d,[Bt,St]=(0,By.useState)([]);"
-        "(0,By.useEffect)(()=>{if(!n||i==null){St([]);return}let e=!1,t=async()=>{"
+        "let f=d,[Bt,BtSet]=(0,By.useState)([]);"
+        "(0,By.useEffect)(()=>{if(!n||i==null){BtSet([]);return}let e=!1,t=async()=>{"
         "try{let r=await "
         f"_n(`{LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})"
         ";if(e)return;let a=Array.isArray(r?.data)?r.data:[];"
-        "St(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
         "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
-        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}catch{e||St([])}};"
+        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}catch{e||BtSet([])}};"
         "t();let r=setInterval(t,1e3);return()=>{e=!0,clearInterval(r)}},[n,i]);"
         "Bt.length>0&&(f=[...f,...Bt.filter(e=>!f.some(t=>t.id===e.id||"
         "e.processId!=null&&t.processId===e.processId||"
@@ -3505,6 +3505,18 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     )
     summary_native_list_after_native_wins_without_output = summary_native_list_after_native_wins.replace(
         "output:String(e.output??``),", ""
+    )
+    summary_native_list_after_shadowed_state = summary_native_list_after.replace("[Bt,BtSet]", "[Bt,St]").replace(
+        "BtSet(", "St("
+    )
+    summary_native_list_after_native_wins_shadowed_state = summary_native_list_after_native_wins.replace(
+        "[Bt,BtSet]", "[Bt,St]"
+    ).replace("BtSet(", "St(")
+    summary_native_list_after_without_output_shadowed_state = summary_native_list_after_without_output.replace(
+        "[Bt,BtSet]", "[Bt,St]"
+    ).replace("BtSet(", "St(")
+    summary_native_list_after_native_wins_without_output_shadowed_state = (
+        summary_native_list_after_native_wins_without_output.replace("[Bt,BtSet]", "[Bt,St]").replace("BtSet(", "St(")
     )
 
     stop_function_before = (
@@ -3592,6 +3604,13 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (summary_native_list_after, summary_native_list_after_native_wins),
                 (summary_native_list_after_without_output, summary_native_list_after_native_wins),
                 (summary_native_list_after_native_wins_without_output, summary_native_list_after_native_wins),
+                (summary_native_list_after_shadowed_state, summary_native_list_after_native_wins),
+                (summary_native_list_after_native_wins_shadowed_state, summary_native_list_after_native_wins),
+                (summary_native_list_after_without_output_shadowed_state, summary_native_list_after_native_wins),
+                (
+                    summary_native_list_after_native_wins_without_output_shadowed_state,
+                    summary_native_list_after_native_wins,
+                ),
             ],
         ),
         ("task005-native-terminal-status-running", [(status_before, status_after)]),
