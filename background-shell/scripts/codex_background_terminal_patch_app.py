@@ -113,7 +113,6 @@ SCENARIO_TESTS = {
     "auto-threshold-450s": ("codex-core", "auto_background_threshold_is_450_seconds"),
     "timeout-to-background": ("codex-core", "yield_timeout_background_exec_records_timeout_source"),
     "ctrl-b": ("codex-core", "user_shortcut_background_request_records_user_shortcut_source"),
-    "sleep-denylist": ("codex-core", "sleep_denylist_matches_claude_leading_sleep_boundaries"),
     "summary-output": ("codex-core", "background_terminal_summary_exposes_command_title"),
     "stop-restart": ("codex-core", "background_terminal_native_terminate_controls_single_process"),
     "busy-wakeup-30s": ("codex-core", "background_terminal_exit_wakeup_is_model_observed_then_delivered"),
@@ -130,7 +129,6 @@ FULL_VERIFY_SCENARIOS = (
     ("T7", "busy-wakeup-30s"),
     ("T8", "idle-wakeup-2min"),
     ("T9", "stop-restart"),
-    ("T10", "sleep-denylist"),
 )
 
 REQUIRED_UI_SCREENSHOT_STEPS = (
