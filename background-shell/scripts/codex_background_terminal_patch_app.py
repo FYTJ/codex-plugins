@@ -42,7 +42,7 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-rust-v0.144.0-alpha.4"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
 RUST_TOOLCHAIN = os.environ.get("CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN")
 RUST_TOOLCHAIN_DIR = Path(RUST_TOOLCHAIN).expanduser() if RUST_TOOLCHAIN else None
@@ -65,6 +65,10 @@ APP_CONTROL_MARKER = "codex-background-terminal-app-control"
 APP_CONTROL_DIR = BACKGROUND_TERMINAL_ROOT / "app-control"
 APP_CONTROL_MAIN_REL = ".vite/build/main-z6HVz-xR.js"
 APP_CONTROL_JS_PARTS = ",".join(json.dumps(part) for part in APP_CONTROL_DIR.relative_to(HOME).parts)
+ELECTRON_MAIN_ENTRIES = (
+    ".vite/build/bootstrap.js",
+    ".vite/build/early-bootstrap.js",
+)
 DMG_MOUNT_DIR = Path(tempfile.gettempdir()) / "codex-dmg-mount"
 MACOS_VOLUMES_DIR = Path(
     os.environ.get("CODEX_BACKGROUND_SHELL_VOLUMES_DIR", str(Path(Path.cwd().anchor) / "Volumes"))
@@ -168,7 +172,7 @@ class CommandResult:
 def run(
     argv: list[str],
     *,
-    timeout: float = 30.0,
+    timeout: float | None = 30.0,
     env_extra: dict[str, str] | None = None,
     cwd: Path | None = None,
 ) -> CommandResult:
@@ -1375,7 +1379,7 @@ def app_asar_summary(app: Path) -> dict[str, Any]:
             "hasPatchFrameworkMarker": PATCH_FRAMEWORK_MARKER
             in json.dumps(package_data, ensure_ascii=False),
         },
-        "bootstrapExists": any(path == ".vite/build/bootstrap.js" for path, _entry in entries),
+        "bootstrapExists": any(path in ELECTRON_MAIN_ENTRIES for path, _entry in entries),
     }
 
 
@@ -1559,7 +1563,7 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
             "match": {
                 "name": "openai-codex-electron",
                 "productName": "Codex",
-                "main": ".vite/build/bootstrap.js",
+                "main": list(ELECTRON_MAIN_ENTRIES),
             },
             "marker": PATCH_FRAMEWORK_MARKER,
             "purpose": "Verify audited ASAR patch/repack/integrity flow before functional hook steps are added.",
@@ -1595,13 +1599,22 @@ def build_native_binary() -> dict[str, Any]:
     before_hash = sha256(BUILT_CODEX_BINARY)
     build = run(
         [str(CARGO), "build", "-p", "codex-cli", "--release"],
-        timeout=1800,
+        timeout=None,
         env_extra=cargo_env(),
         cwd=CODEX_RS,
     )
-    after_hash = sha256(BUILT_CODEX_BINARY)
-    if build.returncode != 0 or after_hash is None:
+    if build.returncode != 0:
         raise ControllerError("native-build-failed", "Patched Codex native binary failed to build.", details=build.as_dict())
+    native_codesign = run(["codesign", "--force", "--sign", "-", str(BUILT_CODEX_BINARY)], timeout=120)
+    if native_codesign.returncode != 0:
+        raise ControllerError(
+            "native-codesign-failed",
+            "Patched Codex native binary could not be explicitly ad-hoc signed.",
+            details=native_codesign.as_dict(),
+        )
+    after_hash = sha256(BUILT_CODEX_BINARY)
+    if after_hash is None:
+        raise ControllerError("native-build-missing", "Patched Codex native binary was not produced.", details=build.as_dict())
     version = run([str(BUILT_CODEX_BINARY), "--version"], timeout=20)
     markers = file_contains_any(BUILT_CODEX_BINARY, NATIVE_PATCH_MARKERS)
     if sorted(markers) != sorted(marker.decode("utf-8", "replace") for marker in NATIVE_PATCH_MARKERS):
@@ -1620,6 +1633,7 @@ def build_native_binary() -> dict[str, Any]:
         "afterSha256": after_hash,
         "sizeBytes": BUILT_CODEX_BINARY.stat().st_size,
         "command": build.as_dict(),
+        "codesignAdhoc": native_codesign.as_dict(),
         "versionCommand": version.as_dict(),
         "nativePatchMarkers": markers,
     }
@@ -1639,8 +1653,13 @@ def install_native_binary(app: Path, build_step: dict[str, Any]) -> dict[str, An
     backup = backup_dir / f"codex-{current_millis()}"
     before_hash = sha256(target)
     shutil.copy2(target, backup)
-    shutil.copy2(source, target)
-    target.chmod(0o755)
+    staged_target = target.with_name(f".{target.name}.background-terminal-{current_millis()}.tmp")
+    try:
+        shutil.copy2(source, staged_target)
+        staged_target.chmod(0o755)
+        os.replace(staged_target, target)
+    finally:
+        staged_target.unlink(missing_ok=True)
     after_hash = sha256(target)
     source_hash = sha256(source)
     version = run([str(target), "--version"], timeout=20)
@@ -1657,6 +1676,7 @@ def install_native_binary(app: Path, build_step: dict[str, Any]) -> dict[str, An
         "source": str(source),
         "target": str(target),
         "backup": str(backup),
+        "atomicReplace": True,
         "beforeSha256": before_hash,
         "afterSha256": after_hash,
         "sourceSha256": source_hash,
@@ -2366,7 +2386,9 @@ def wait_for_session_shell_background(
 
     deadline = time.time() + timeout
     attempts: list[dict[str, Any]] = []
-    process_pattern = re.compile(r"Process running with session ID\s+(\d+)")
+    process_pattern = re.compile(
+        r"(?:Background terminal started with session ID|Process running with session ID)\s+(\d+)"
+    )
     last_call: dict[str, Any] | None = None
 
     while time.time() < deadline:
@@ -2689,7 +2711,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
             "finishedAtMs": current_millis(),
         }
 
-    main_command = "sh -lc 'printf \"bt-ui-output-%s\\n\" \"$$\"; sleep 120; printf \"bt-ui-end\\n\"'"
+    main_command = "/bin/sh -lc 'printf \"bt-ui-output-%s\\n\" \"$$\"; sleep 120; printf \"bt-ui-end\\n\"'"
     start_response = add_check(
         "thread-start-real-ui-conversation",
         app_control_request(
@@ -2843,8 +2865,8 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T6",
     )
 
-    busy_command = "sh -lc 'printf \"bt-busy-start\\n\"; sleep 30; printf \"bt-busy-end\\n\"'"
-    busy_foreground_command = "sh -lc 'sleep 45; printf \"bt-busy-foreground-done\\n\"'"
+    busy_command = "/bin/sh -lc 'printf \"bt-busy-start\\n\"; sleep 30; printf \"bt-busy-end\\n\"'"
+    busy_foreground_command = "/bin/sh -lc 'sleep 45; printf \"bt-busy-foreground-done\\n\"'"
     busy_response = add_check(
         "busy-wakeup-start-turn",
         app_control_request(
@@ -2909,7 +2931,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T8",
     )
 
-    stop_command = "sh -lc 'printf \"bt-stop-start\\n\"; sleep 90; printf \"bt-stop-end\\n\"'"
+    stop_command = "/bin/sh -lc 'printf \"bt-stop-start\\n\"; sleep 90; printf \"bt-stop-end\\n\"'"
     stop_response = add_check(
         "stop-background-terminal-start-turn",
         app_control_request(
@@ -2959,7 +2981,7 @@ def real_codex_app_ui_verify() -> dict[str, Any]:
         test_id="T9",
     )
 
-    restart_command = "sh -lc 'printf \"bt-restart-start\\n\"; sleep 90; printf \"bt-restart-end\\n\"'"
+    restart_command = "/bin/sh -lc 'printf \"bt-restart-start\\n\"; sleep 90; printf \"bt-restart-end\\n\"'"
     restart_response = add_check(
         "restart-background-terminal-through-real-turn",
         app_control_request(
@@ -3179,13 +3201,17 @@ def apply_package_json_framework_marker(asar_path: Path, header: dict[str, Any],
     expected = {
         "name": "openai-codex-electron",
         "productName": "Codex",
-        "main": ".vite/build/bootstrap.js",
     }
     mismatches = {
         key: {"expected": value, "actual": package.get(key)}
         for key, value in expected.items()
         if package.get(key) != value
     }
+    if package.get("main") not in ELECTRON_MAIN_ENTRIES:
+        mismatches["main"] = {
+            "expected": list(ELECTRON_MAIN_ENTRIES),
+            "actual": package.get("main"),
+        }
     if mismatches:
         raise ControllerError(
             "patch-match-failed",
@@ -3663,9 +3689,10 @@ def app_control_bridge_js() -> str:
         "if(globalThis.__cbtAppControlStarted)return;"
         "globalThis.__cbtAppControlStarted=!0;"
         "let n=!1;"
-        f"const r=s.default.join(o.default.homedir(),{APP_CONTROL_JS_PARTS}),"
-        "i=async(e,t)=>{await d.default.mkdir(r,{recursive:!0});await d.default.writeFile(s.default.join(r,e),JSON.stringify({...t,generatedAtMs:Date.now()},null,2),`utf8`)},"
-        "a=()=>e.appServerConnectionRegistry.getConnection(B),"
+        "const __p=require(`node:path`),__fs=require(`node:fs/promises`),__os=require(`node:os`),__crypto=require(`node:crypto`),"
+        f"r=__p.join(__os.homedir(),{APP_CONTROL_JS_PARTS}),"
+        "i=async(e,t)=>{await __fs.mkdir(r,{recursive:!0});await __fs.writeFile(__p.join(r,e),JSON.stringify({...t,generatedAtMs:Date.now()},null,2),`utf8`)},"
+        "a=()=>e.appServerConnectionRegistry.getConnection(`local`),"
         "o2=async(e,t)=>{let n=e.windowManager.getPrimaryWindow();"
         "if(n==null||n.isDestroyed())return{ok:!1,reason:`primary-window-missing`};"
         "let r=await n.webContents.executeJavaScript(t,!0);return{ok:!0,result:r}},"
@@ -3689,9 +3716,9 @@ def app_control_bridge_js() -> str:
         "const e=v[0];e.scrollIntoView({block:'center',inline:'center'});e.click();"
         "return{clicked:true,count:v.length,text:(e.innerText||e.textContent||'').slice(0,500)}})()`"
         ".replace(JSON.stringify('${TEXT}'),JSON.stringify(t))),"
-        "c=async t=>{let n=s.default.join(r,t),c=JSON.parse(await d.default.readFile(n,`utf8`)),u=String(c.id??l.randomUUID()),f=s.default.join(r,`processing-${u}.json`);"
-        "try{await d.default.rename(n,f)}catch{return}"
-        "try{let n=a(),r=null,p=null,m=c.cwd??o.default.homedir();"
+        "c=async t=>{let n=__p.join(r,t),c=JSON.parse(await __fs.readFile(n,`utf8`)),u=String(c.id??__crypto.randomUUID()),f=__p.join(r,`processing-${u}.json`);"
+        "try{await __fs.rename(n,f)}catch{return}"
+        "try{let n=a(),r=null,p=null,m=c.cwd??__os.homedir();"
         "if(c.action===`ping`)r={pong:!0,marker:t};"
         "else if(c.action===`start-ui-thread`){let t=await n.startThread({cwd:m,threadSource:c.threadSource??`user`,ephemeral:c.ephemeral??!1});let a=t.thread.id;"
         "c.title&&await n.updateThreadTitle(a,c.title).catch(()=>{});"
@@ -3699,9 +3726,9 @@ def app_control_bridge_js() -> str:
         "if(c.startTurn!==!1&&c.prompt!=null){let e={threadId:a,input:[{type:`text`,text:String(c.prompt),text_elements:[]}],cwd:m};p=await n.startTurn(e,null)}"
         "r={threadId:a,sessionId:t.thread.sessionId,cwd:t.cwd??t.thread.cwd??m,turnId:p?.turn?.id??null,thread:t.thread,turn:p?.turn??null};}"
         "else if(c.action===`start-turn`){let e={threadId:c.threadId,input:[{type:`text`,text:String(c.prompt??``),text_elements:[]}],cwd:c.cwd??m};p=await n.startTurn(e,null);r={turnId:p?.turn?.id??null,turn:p?.turn??null}}"
-        "else if(c.action===`list-background-terminals`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/list:${l.randomUUID()}`,method:`thread/backgroundTerminals/list`,params:{threadId:c.threadId,cursor:c.cursor??null,limit:c.limit??50}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/list failed`);r=e.result}"
-        "else if(c.action===`terminate-background-terminal`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/terminate:${l.randomUUID()}`,method:`thread/backgroundTerminals/terminate`,params:{threadId:c.threadId,processId:c.processId}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/terminate failed`);r=e.result}"
-        "else if(c.action===`clean-background-terminals`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/clean:${l.randomUUID()}`,method:`thread/backgroundTerminals/clean`,params:{threadId:c.threadId}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/clean failed`);r=e.result}"
+        "else if(c.action===`list-background-terminals`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/list:${__crypto.randomUUID()}`,method:`thread/backgroundTerminals/list`,params:{threadId:c.threadId,cursor:c.cursor??null,limit:c.limit??50}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/list failed`);r=e.result}"
+        "else if(c.action===`terminate-background-terminal`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/terminate:${__crypto.randomUUID()}`,method:`thread/backgroundTerminals/terminate`,params:{threadId:c.threadId,processId:c.processId}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/terminate failed`);r=e.result}"
+        "else if(c.action===`clean-background-terminals`){let e=await n.sendInternalRequest({id:`thread/backgroundTerminals/clean:${__crypto.randomUUID()}`,method:`thread/backgroundTerminals/clean`,params:{threadId:c.threadId}});if(e.error)throw Error(e.error.message??`thread/backgroundTerminals/clean failed`);r=e.result}"
         "else if(c.action===`navigate`){let t=e.windowManager.getPrimaryWindow();if(t!=null&&!t.isDestroyed()){e.windowManager.sendMessageToWindow(t,{type:`navigate-to-route`,path:c.path??`/`});t.isMinimized?.()&&t.restore();t.show();t.focus();r={navigated:!0,path:c.path??`/`}}else r={navigated:!1}}"
         "else if(c.action===`renderer-dom-text`)r=await o2(e,`(()=>document.body?.innerText?.slice(0,${Number.isFinite(Number(c.maxChars))?Number(c.maxChars):4000})||'')()`);"
         "else if(c.action===`renderer-right-panel-text`)r=await r2(e,c.maxChars);"
@@ -3710,8 +3737,8 @@ def app_control_bridge_js() -> str:
         "else throw Error(`unknown app control action: ${c.action}`);"
         "await i(`response-${u}.json`,{ok:!0,id:u,action:c.action,result:r})}"
         "catch(e){await i(`response-${u}.json`,{ok:!1,id:u,action:c.action,errorMessage:e instanceof Error?e.message:String(e),stack:e instanceof Error?e.stack:null})}"
-        "finally{await d.default.unlink(f).catch(()=>{})}},"
-        "u2=async()=>{if(n)return;n=!0;try{await d.default.mkdir(r,{recursive:!0});let e=await d.default.readdir(r);for(let t of e)if(t.startsWith(`request-`)&&t.endsWith(`.json`))await c(t)}catch(e){}finally{n=!1}};"
+        "finally{await __fs.unlink(f).catch(()=>{})}},"
+        "u2=async()=>{if(n)return;n=!0;try{await __fs.mkdir(r,{recursive:!0});let e=await __fs.readdir(r);for(let t of e)if(t.startsWith(`request-`)&&t.endsWith(`.json`))await c(t)}catch(e){}finally{n=!1}};"
         "u2();let f=setInterval(u2,500);f.unref?.()}"
     )
 
@@ -3721,12 +3748,30 @@ def apply_app_control_bridge_patch(asar_path: Path, header: dict[str, Any], data
     text = original.decode("utf-8")
     substeps: list[dict[str, Any]] = []
     bridge = app_control_bridge_js()
-    definition_anchor = "var IF=class{"
+    class_anchors = []
+    for match in re.finditer(r"var [A-Za-z_$][\w$]*=class\{", text):
+        window = text[match.start() : match.start() + 6000]
+        if "appServerConnectionRegistry" in window and "Failed to warm recommended skills cache" in window:
+            class_anchors.append(match.group(0))
+    if len(class_anchors) != 1:
+        raise ControllerError(
+            "patch-match-failed",
+            "Expected exactly one main-process app controller class anchor.",
+            details={
+                "target": APP_CONTROL_MAIN_REL,
+                "matchCount": len(class_anchors),
+                "matches": class_anchors,
+                "step": "app-control-bridge-definition",
+            },
+        )
+    definition_anchor = class_anchors[0]
     if APP_CONTROL_MARKER in text:
         if (
             "renderer-right-panel-text" in text
             and "renderer-click-right-panel-text" in text
             and "a,li,div,span" in text
+            and "__crypto.randomUUID()" in text
+            and "l.randomUUID()" not in text
         ):
             substeps.append(
                 {
@@ -3777,17 +3822,6 @@ def apply_app_control_bridge_patch(asar_path: Path, header: dict[str, Any], data
             }
         )
 
-    call_before = (
-        "this.petInstallManager=new EP({appServerClient:this.appServerClient,preferWsl:vF}),"
-        "t.s({refresh:!1,preferWsl:vF,bundledRepoRoot:this.bundledSkillsRoot,appServerClient:this.appServerClient})"
-        ".catch(e=>{bF().warning(`Failed to warm recommended skills cache`,{safe:{},sensitive:{error:e}})})}dispose(){"
-    )
-    call_after = (
-        "this.petInstallManager=new EP({appServerClient:this.appServerClient,preferWsl:vF}),"
-        "t.s({refresh:!1,preferWsl:vF,bundledRepoRoot:this.bundledSkillsRoot,appServerClient:this.appServerClient})"
-        ".catch(e=>{bF().warning(`Failed to warm recommended skills cache`,{safe:{},sensitive:{error:e}})}),"
-        "__cbtAppControl(this)}dispose(){"
-    )
     if "__cbtAppControl(this)" in text:
         substeps.append(
             {
@@ -3798,14 +3832,22 @@ def apply_app_control_bridge_patch(asar_path: Path, header: dict[str, Any], data
             }
         )
     else:
-        count = text.count(call_before)
-        if count != 1:
+        warning_anchor = "Failed to warm recommended skills cache"
+        warning_index = text.find(warning_anchor)
+        dispose_index = text.find("}dispose(){", warning_index)
+        next_class_index = text.find("var ", warning_index)
+        if warning_index < 0 or dispose_index < 0 or (next_class_index >= 0 and dispose_index > next_class_index):
             raise ControllerError(
                 "patch-match-failed",
                 "Expected exactly one main-process constructor call anchor.",
-                details={"target": APP_CONTROL_MAIN_REL, "beforeCount": count, "step": "app-control-bridge-constructor-call"},
+                details={
+                    "target": APP_CONTROL_MAIN_REL,
+                    "warningIndex": warning_index,
+                    "disposeIndex": dispose_index,
+                    "step": "app-control-bridge-constructor-call",
+                },
             )
-        text = text.replace(call_before, call_after, 1)
+        text = text[:dispose_index] + ",__cbtAppControl(this)" + text[dispose_index:]
         substeps.append(
             {
                 "name": "app-control-bridge-constructor-call",
@@ -3988,15 +4030,18 @@ def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[
         raise ControllerError("patch-target-missing", "Configured Codex.app target does not exist.", details=target_before)
     if target_before.get("oldPatchMarkers"):
         raise ControllerError("old-patch-not-removed", "Old patch markers are still present.", details=target_before)
+    running_before = app_processes(app)
     build_step = build_native_binary()
     if allow_running:
         stop_report = {
             "attempted": False,
             "terminatedPids": [],
             "forcedPids": [],
-            "remainingPids": [int(item["pid"]) for item in app_processes(app)],
+            "remainingPids": [],
             "errors": [],
             "skippedBecauseAllowRunning": True,
+            "runningPids": [int(item["pid"]) for item in running_before],
+            "nativeInstallMode": "atomic-replace-live-processes-continue-old-inode",
         }
     else:
         stop_report = stop_user_app(app, timeout=10)
@@ -4021,7 +4066,7 @@ def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[
     replacements[output_tab_step["target"]] = output_tab_step["content"]
     repack = write_asar_archive(asar_path, header, data_offset, replacements)
     plist_update = update_info_plist_asar_integrity(app, str(repack["asarHeaderSha256"]))
-    quarantine = run(["xattr", "-dr", "com.apple.quarantine", str(app)], timeout=30)
+    xattr_clear = run(["xattr", "-cr", str(app)], timeout=60)
     codesign_adhoc = run(["codesign", "--force", "--deep", "--sign", "-", str(app)], timeout=180)
     target_after = analyze_app(app, role="patch-target-after")
     marker_ok = PATCH_FRAMEWORK_MARKER in target_after.get("newPatchMarkers", [])
@@ -4040,7 +4085,13 @@ def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[
     app_control_marker_ok = APP_CONTROL_MARKER in target_after.get("newPatchMarkers", [])
     task005_ui_after = scan_task005_ui_bindings(app)
     app_control_after = scan_app_control_bridge(app)
-    native_ok = target_after.get("nativePatchMarkersOk") is True and target_after.get("codexHash") == native_step.get("afterSha256")
+    codex_version_command = target_after.get("codexVersionCommand")
+    codex_version_ok = isinstance(codex_version_command, dict) and codex_version_command.get("returncode") == 0
+    native_ok = (
+        target_after.get("nativePatchMarkersOk") is True
+        and target_after.get("codexHash") == native_step.get("afterSha256")
+        and codex_version_ok
+    )
     return {
         "ok": target_after.get("exists") is True
         and target_after.get("isUserWritableTarget") is True
@@ -4133,8 +4184,10 @@ def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[
         ],
         "repack": repack,
         "plistUpdate": plist_update,
-        "quarantineClear": quarantine.as_dict(),
+        "xattrClear": xattr_clear.as_dict(),
+        "quarantineClear": xattr_clear.as_dict(),
         "codesignAdhoc": codesign_adhoc.as_dict(),
+        "codexVersionOk": codex_version_ok,
         "stopUserApp": stop_report,
         "targetBefore": target_before,
         "targetAfter": target_after,
