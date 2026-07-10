@@ -37,7 +37,7 @@ git apply --check ../../scripts/openai-codex-background-shell.patch
 git apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-当前兼容基线为 Codex App `26.707.30751 (5018)`，其 bundled native CLI 为 `codex-cli 0.144.0-alpha.4`。控制器同时兼容 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口，并在 App 正在运行时使用原子替换安装 native binary；新代码在完整退出并重新打开 Codex 后生效。
+当前兼容基线为 Codex App `26.707.31428 (5059)`，其 bundled native CLI 为 `codex-cli 0.144.0-alpha.4`。控制器同时兼容 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口，并在 App 正在运行时使用原子替换安装 native binary；新代码在完整退出并重新打开 Codex 后生效。
 
 控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 

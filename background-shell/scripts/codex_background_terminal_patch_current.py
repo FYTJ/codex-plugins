@@ -60,6 +60,8 @@ def find_text_entry(
 
 
 def action_fn(text: str) -> str:
+    if "Ba(`clean-background-terminals`" in text or "Ba(`list-background-terminals`" in text:
+        return "Ba"
     if "Xe(`clean-background-terminals`" in text or "Xe(`list-background-terminals`" in text:
         return "Xe"
     if "Bo(`clean-background-terminals`" in text or "Bo(`list-background-terminals`" in text:
@@ -124,6 +126,11 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
     )
     command_before_current = (
         '"interrupt-conversation":P9(async(e,{conversationId:t,initiatedBy:n},r)=>'
+        "{let i=await e.interruptConversation(t);"
+        "n===`user`&&i!=null&&r.markTurnInterruptedByThisClient(t,i)})"
+    )
+    command_before_5059 = (
+        '"interrupt-conversation":X7(async(e,{conversationId:t,initiatedBy:n},r)=>'
         "{let i=await e.interruptConversation(t);"
         "n===`user`&&i!=null&&r.markTurnInterruptedByThisClient(t,i)})"
     )
@@ -192,13 +199,22 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[ne]);"
         "let{serviceTierSettings:Te}=Pm(ae)"
     )
+    keydown_before_5059 = "aO(`composer.togglePlanMode`,Ce,Te);let{serviceTierSettings:Ee}=sm(oe)"
+    keydown_after_5059 = (
+        "aO(`composer.togglePlanMode`,Ce,Te);"
+        "(0,w0.useEffect)(()=>{let e=e=>{e.type===`keydown`&&e.key.toLowerCase()===`b`&&"
+        "e.ctrlKey===!0&&e.metaKey!==!0&&e.altKey!==!0&&e.shiftKey!==!0&&C?.type===`local`&&"
+        f"(e.preventDefault(),e.stopPropagation(),Af(`{m.CTRL_B_ACTION}`,{{conversationId:C.localConversationId}}).catch(e=>{{}}))}};"
+        "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[C]);"
+        "let{serviceTierSettings:Ee}=sm(oe)"
+    )
     keydown_rel = find_text_entry(
         asar_path,
         header,
         data_offset,
         step_name="ctrl-b-keydown-path",
         include_all=("localConversationId",),
-        include_any=(keydown_before_old, keydown_before_new, keydown_before_current, m.CTRL_B_ACTION),
+        include_any=(keydown_before_old, keydown_before_new, keydown_before_current, keydown_before_5059, m.CTRL_B_ACTION),
         path_prefix="webview/assets/",
     )
 
@@ -230,6 +246,9 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
                 (command_before_current, command_after(command_before_current, "P9")),
                 (command_ctrl_b_after(command_before_current, "P9"), command_after(command_before_current, "P9")),
                 (command_ctrl_b_terminate_after(command_before_current, "P9"), command_after(command_before_current, "P9")),
+                (command_before_5059, command_after(command_before_5059, "X7")),
+                (command_ctrl_b_after(command_before_5059, "X7"), command_after(command_before_5059, "X7")),
+                (command_ctrl_b_terminate_after(command_before_5059, "X7"), command_after(command_before_5059, "X7")),
             ],
             step_name="ctrl-b-host-command",
         ),
@@ -242,6 +261,7 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
                 (keydown_before_old, keydown_after_old),
                 (keydown_before_new, keydown_after_new),
                 (keydown_before_current, keydown_after_current),
+                (keydown_before_5059, keydown_after_5059),
             ],
             step_name="ctrl-b-global-keydown",
         ),
@@ -318,6 +338,21 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
         "bb0:{if(i==null){"
     )
+    summary_5059_before = "let g=h,_;t[2]!==s||t[3]!==a||t[4]!==c||t[5]!==o||t[6]!==l?"
+    summary_5059_after = (
+        "let g=h,[Bt,BtSet]=(0,Ph.useState)([]),_;"
+        "(0,Ph.useEffect)(()=>{if(a==null){BtSet([]);return}let e=!1,t=async()=>{try{let r=await "
+        f"{call}(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}});"
+        "if(e)return;let n=Array.isArray(r?.data)?r.data:[];"
+        "BtSet(n.map(e=>({id:String(e.itemId??e.id??e.processId??`${a}:${e.command??``}`),"
+        "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
+        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}"
+        "catch{e||BtSet([])}};t();let r=setInterval(t,1e3);return()=>{e=!0,clearInterval(r)}},[a]);"
+        "Bt.length>0&&(g=[...Bt,...g.filter(e=>!Bt.some(t=>t.id===e.id||"
+        "e.processId!=null&&t.processId===e.processId||"
+        "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
+        "t[2]!==s||t[3]!==a||t[4]!==c||t[5]!==o||t[6]!==l?"
+    )
 
     stop_old_before = (
         "k=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
@@ -382,6 +417,27 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "if(p.current){tu(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
         "Ml(f,e.process.id)},()=>{u(),Ml(f,e.process.id)}))}"
     )
+    stop_5059_before = (
+        "k=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "h.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "if(p.current){Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "Dc(f,e.process.id)},()=>{u(),Dc(f,e.process.id)}))}"
+    )
+    stop_5059_after = (
+        "k=(e,t)=>{let n=e.metrics?.pid;n!=null?"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "h.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "if(p.current){Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "Dc(f,e.process.id)},()=>{u(),Dc(f,e.process.id)})):"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null&&"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{"
+        "if(p.current){Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "Dc(f,e.process.id)},()=>{u(),Dc(f,e.process.id)}))}"
+    )
 
     restart_old_before = (
         "N=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
@@ -437,6 +493,24 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{"
         "M(e,t)},()=>{l(),Ml(f,e.process.id)}))}"
     )
+    restart_5059_before = (
+        "N=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "h.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "M(e,t)},()=>{l(),Dc(f,e.process.id)}))}"
+    )
+    restart_5059_after = (
+        "N=(e,t)=>{let n=e.metrics?.pid;n!=null?"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "h.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "M(e,t)},()=>{l(),Dc(f,e.process.id)})):"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null&&"
+        "(Zc(f,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{"
+        "M(e,t)},()=>{l(),Dc(f,e.process.id)}))}"
+    )
 
     stop_disabled_before = "let O=o.metrics?.pid==null||u||d||f,k;"
     stop_disabled_after = "let O=o.metrics?.pid==null&&o.process.source!==`background-terminal`||u||d||f,k;"
@@ -458,6 +532,11 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "O=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
         "?(0,Fh.jsx)(J,{...Lh.stopMissingProcessTooltip}):void 0"
     )
+    stop_tooltip_5059_before = "O=o.metrics?.pid==null?(0,Fh.jsx)(H,{...Lh.stopMissingProcessTooltip}):void 0"
+    stop_tooltip_5059_after = (
+        "O=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
+        "?(0,Fh.jsx)(H,{...Lh.stopMissingProcessTooltip}):void 0"
+    )
     stop_interactive_current_before = "let k=o.metrics?.pid==null,A;"
     stop_interactive_current_after = "let k=o.metrics?.pid==null&&o.process.source!==`background-terminal`,A;"
 
@@ -472,14 +551,15 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (summary_after_shadowed_state_old_call, summary_after),
                 (summary_after_shadowed_state_new_call, summary_after),
                 (summary_current_before, summary_current_after),
+                (summary_5059_before, summary_5059_after),
             ],
         ),
         ("task005-native-terminal-status-running", [(status_before, status_after), (status_current_before, status_current_after)]),
         ("task005-native-terminal-restart-enabled", [(missing_pid_before, missing_pid_after)]),
-        ("task005-native-terminal-stop-action", [(stop_old_before, stop_old_after), (stop_new_before, stop_new_after), (stop_current_before, stop_current_after)]),
-        ("task005-native-terminal-restart-action", [(restart_old_before, restart_old_after), (restart_new_before, restart_new_after), (restart_current_before, restart_current_after)]),
+        ("task005-native-terminal-stop-action", [(stop_old_before, stop_old_after), (stop_new_before, stop_new_after), (stop_current_before, stop_current_after), (stop_5059_before, stop_5059_after)]),
+        ("task005-native-terminal-restart-action", [(restart_old_before, restart_old_after), (restart_new_before, restart_new_after), (restart_current_before, restart_current_after), (restart_5059_before, restart_5059_after)]),
         ("task005-native-terminal-stop-enabled", [(stop_disabled_before, stop_disabled_after), (stop_disabled_current_before, stop_disabled_current_after)]),
-        ("task005-native-terminal-stop-tooltip", [(stop_tooltip_before, stop_tooltip_after), (stop_tooltip_current_before, stop_tooltip_current_after)]),
+        ("task005-native-terminal-stop-tooltip", [(stop_tooltip_before, stop_tooltip_after), (stop_tooltip_current_before, stop_tooltip_current_after), (stop_tooltip_5059_before, stop_tooltip_5059_after)]),
         ("task005-native-terminal-stop-tooltip-interactive", [(stop_interactive_before, stop_interactive_after), (stop_interactive_current_before, stop_interactive_current_after)]),
     ]
     substeps = []
@@ -592,6 +672,24 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         "children:(0,Bi.jsx)(we,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
         "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=f,t[4]=h),h}"
     )
+    function_5059_before = (
+        "function __e(e){let t=(0,v8.c)(5),{conversationId:n,terminalId:r}=e,i=Zr(Hi,n),a;"
+        "t[0]!==r||t[1]!==i?(a=b_e(i,r),t[0]=r,t[1]=i,t[2]=a):a=t[2];"
+        "let o=a,s=v_e(r),c=o?.aggregatedOutput??s?.buffer??``,l;"
+        "return t[3]===c?l=t[4]:(l=(0,b8.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:c.length>0?(0,b8.jsx)(h_e,{output:c}):(0,b8.jsx)(`div`,{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,b8.jsx)(W,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=c,t[4]=l),l}"
+    )
+    function_5059_after = (
+        "function __e(e){let t=(0,v8.c)(5),{conversationId:n,terminalId:r,command:i,output:a}=e,o=Zr(Hi,n),s;"
+        "t[0]!==r||t[1]!==o?(s=b_e(o,r),t[0]=r,t[1]=o,t[2]=s):s=t[2];"
+        "let c=s,l=v_e(r),u=c?.aggregatedOutput??l?.buffer??a??``,d=i??``,f=d.length>0?`${d}\\n${u}`:u,h;"
+        "return t[3]===f?h=t[4]:(h=(0,b8.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:f.length>0?(0,b8.jsx)(h_e,{output:f}):(0,b8.jsx)(`div`,{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,b8.jsx)(W,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=f,t[4]=h),h}"
+    )
     props_before = "props:{conversationId:n,terminalId:t.id},id:`background-terminal:${n}:${t.id}`"
     props_command_after = "props:{conversationId:n,terminalId:t.id,command:t.command},id:`background-terminal:${n}:${t.id}`"
     props_after = "props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``},id:`background-terminal:${n}:${t.id}`"
@@ -607,6 +705,17 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         + f',"{m.LIST_BG_ACTION}":e9(async(e,{{conversationId:t,cursor:n,limit:r}})=>{{return await e.listBackgroundTerminals(t,n,r)}})'
         + f',"{m.TERMINATE_BG_ACTION}":e9(async(e,{{conversationId:t,processId:n}})=>{{return await e.terminateBackgroundTerminal(t,n)}})'
     )
+    command_before_5059 = (
+        '"interrupt-conversation":X7(async(e,{conversationId:t,initiatedBy:n},r)=>'
+        "{let i=await e.interruptConversation(t);"
+        "n===`user`&&i!=null&&r.markTurnInterruptedByThisClient(t,i)})"
+    )
+    command_after_5059 = (
+        command_before_5059
+        + f',"{m.CTRL_B_ACTION}":X7(async(e,{{conversationId:t}})=>{{await e.backgroundActiveTerminal(t)}})'
+        + f',"{m.LIST_BG_ACTION}":X7(async(e,{{conversationId:t,cursor:n,limit:r}})=>{{return await e.listBackgroundTerminals(t,n,r)}})'
+        + f',"{m.TERMINATE_BG_ACTION}":X7(async(e,{{conversationId:t,processId:n}})=>{{return await e.terminateBackgroundTerminal(t,n)}})'
+    )
 
     substeps: list[dict[str, Any]] = []
     text, step = m.replace_text_variants_in_text(
@@ -616,17 +725,22 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
             (function_old_before, function_old_after),
             (function_new_before, function_new_after),
             (function_current_before, function_current_after),
+            (function_5059_before, function_5059_after),
         ],
         step_name="output-tab-command-line-header",
     )
     substeps.append(step)
     text, step = m.replace_text_variants_in_text(text, rel_path, [(props_before, props_after), (props_command_after, props_after)], step_name="output-tab-command-prop")
     substeps.append(step)
-    if command_before_new in text or command_after_new in text:
+    command_variants = [
+        (command_before_new, command_after_new),
+        (command_before_5059, command_after_5059),
+    ]
+    if any(before in text or after in text for before, after in command_variants):
         text, step = m.replace_text_variants_in_text(
             text,
             rel_path,
-            [(command_before_new, command_after_new)],
+            command_variants,
             step_name="output-tab-preserve-background-terminal-host-commands",
         )
         substeps.append(step)
@@ -683,12 +797,24 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         host_registry_present = host_registry_present or (
             f'"{m.LIST_BG_ACTION}":' in text and f'"{m.TERMINATE_BG_ACTION}":' in text
         )
-    list_calls = [f"_n(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})", f"Bo(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})", f"Xe(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})"]
-    term_calls = [f"_n(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{", f"Bo(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{", f"Xe(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{"]
+    list_calls = [
+        f"_n(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
+        f"Bo(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
+        f"Xe(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
+        f"Ba(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}})",
+    ]
+    term_calls = [
+        f"_n(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{",
+        f"Bo(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{",
+        f"Xe(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{",
+        f"Ba(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(()=>{{",
+    ]
     checks = {
         "summaryPollsNativeBackgroundTerminalList": any(call in local_text for call in list_calls),
         "summaryMergesNativeBackgroundTerminalList": (
-            "f=[...Bt,...f.filter" in local_text or "n=[...Bt,...n.filter" in local_text
+            "f=[...Bt,...f.filter" in local_text
+            or "n=[...Bt,...n.filter" in local_text
+            or "g=[...Bt,...g.filter" in local_text
         ),
         "summaryMapsNativeBackgroundTerminalOutput": "output:String(e.output??``)" in local_text,
         "summaryUsesCommandTitle": "e.terminal.command.length>0?e.terminal.command" in local_text,
@@ -777,6 +903,7 @@ def configure_app_target(app_arg: str | None) -> None:
     if not app_arg:
         return
     app = Path(app_arg).expanduser()
+    m.SYSTEM_APP = app
     m.PATCH_TARGET_APP = app
     m.DEFAULT_USER_APP = app
 
