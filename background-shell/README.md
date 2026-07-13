@@ -4,8 +4,8 @@
 
 ## 主要文件
 
-- `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、验证官方 Codex.app 目标、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
-- `scripts/codex_background_terminal_patch_current.py`：当前 Codex App bundle 兼容 wrapper，用于适配更新后的 ASAR 入口和 minified symbol。
+- `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、验证官方 Codex App 目标、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
+- `scripts/codex_background_terminal_patch_current.py`：当前 Codex App bundle 兼容 wrapper，用于适配更新后的 App 路径、ASAR 入口和 minified symbol。
 - `scripts/openai-codex-background-shell.patch`：基于 `openai/codex` 的 `rust-v0.144.0-alpha.4` tag 生成的 Rust/native patch。控制器构建 native binary 时要求该 patch 已应用到对应源码副本。
 - `bin/codex-background-shell-patch-app`：可符号链接到 `~/.codex/bin` 的命令入口。
 - `bin/codex-background-shell-patch-current`：调用当前 Codex App 兼容 wrapper 的命令入口。
@@ -37,7 +37,7 @@ git apply --check ../../scripts/openai-codex-background-shell.patch
 git apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-当前兼容基线为 Codex App `26.707.31428 (5059)`，其 bundled native CLI 为 `codex-cli 0.144.0-alpha.4`。控制器同时兼容 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口，并在 App 正在运行时使用原子替换安装 native binary；新代码在完整退出并重新打开 Codex 后生效。
+当前兼容基线为 Codex App `26.707.61608 (5200)`，安装路径为 `/Applications/ChatGPT.app`，bundle id 仍为 `com.openai.codex`，其 bundled native CLI 为 `codex-cli 0.144.0-alpha.4`。current wrapper 同时保留旧 `/Applications/Codex.app` 路径和旧构建的兼容分支，并支持 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口。App 正在运行时可使用 `--allow-running` 原子写入补丁；新代码在用户下次完整退出并重新打开 Codex 后生效。
 
 控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 
@@ -88,13 +88,13 @@ rustc
 
 ## 行为边界
 
-控制器 patch 当前安装的官方 Codex.app：
+current wrapper patch 当前安装的官方 Codex App，build 5200 的默认目标为：
 
 ```text
-/Applications/Codex.app
+/Applications/ChatGPT.app
 ```
 
-`/Applications/Codex.app` 同时作为 clean source 候选和 patch 目标。每次 patch 后由当前 CLI 会话负责停止、签名验证、重启和截图检查，避免 App 自身重启打断调试 loop。
+当 `/Applications/Codex.app` 仍存在时，current wrapper 保留该旧路径为默认目标；否则自动选择 `/Applications/ChatGPT.app`。使用 `--allow-running` 时脚本不会停止或重启 App，补丁写入后仍会执行 ASAR integrity、原生标记、JavaScript 语法和 codesign 静态验证。
 
 验证报告默认写入：
 
@@ -110,7 +110,7 @@ background-shell/background-terminal/reports/
 
 - `shell_command` 支持 `run_in_background=true`。
 - 前台运行中的 shell 可以转入后台。
-- 前台命令达到 `450s` 自动后台阈值时转后台，不 kill 后重跑。
+- 前台命令达到 `300s` 自动后台阈值时转后台，不 kill 后重跑。
 - timeout 时优先把原进程转后台。
 - `Ctrl+B` 可将当前可消费前台 shell 放入后台。
 - sleep denylist 对齐 leading `sleep` 规则。
