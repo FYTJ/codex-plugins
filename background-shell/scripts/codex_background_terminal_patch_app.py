@@ -32,7 +32,7 @@ from typing import Any
 
 HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
-RESOURCE_ROOT = SCRIPT_DIR.parent
+RESOURCE_ROOT = SCRIPT_DIR
 BACKGROUND_TERMINAL_ROOT = RESOURCE_ROOT / "background-terminal"
 SYSTEM_APP = Path("/Applications/Codex.app")
 PATCH_TARGET_APP = SYSTEM_APP
@@ -42,18 +42,19 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-rust-v0.144.0-alpha.4"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-rust-v0.144.2"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-RUST_TOOLCHAIN = os.environ.get("CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN")
-RUST_TOOLCHAIN_DIR = Path(RUST_TOOLCHAIN).expanduser() if RUST_TOOLCHAIN else None
-RUSTC = Path(os.environ.get("RUSTC", str((RUST_TOOLCHAIN_DIR / "rustc") if RUST_TOOLCHAIN_DIR else "rustc"))).expanduser()
-CARGO = Path(os.environ.get("CARGO", str((RUST_TOOLCHAIN_DIR / "cargo") if RUST_TOOLCHAIN_DIR else "cargo"))).expanduser()
+EXPECTED_SOURCE_HEAD = "a6645b6b8a656360fa16fb7e1c6721d0697d3d6a"
+EXPECTED_CODEX_VERSION = "codex-cli 0.144.2"
+RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
+RUSTC = RUST_TOOLCHAIN / "rustc"
+CARGO = RUST_TOOLCHAIN / "cargo"
 BUILT_CODEX_BINARY = CODEX_RS / "target" / "release" / "codex"
 NATIVE_PATCH_FILE = Path(__file__).with_name("openai-codex-background-shell.patch")
 CHANGE_ID = "change-20260704-034011"
 APP_BUNDLE_ID = "com.openai.codex"
 OPENAI_TEAM_ID = "2DC432GLL2"
-AUTO_BACKGROUND_THRESHOLD_SECONDS = 450
+AUTO_BACKGROUND_THRESHOLD_SECONDS = 300
 PATCH_FRAMEWORK_MARKER = "codex-background-terminal-native-framework"
 CTRL_B_ACTION = "background-active-terminal"
 CTRL_B_NATIVE_METHOD = "thread/backgroundTerminals/backgroundActive"
@@ -69,10 +70,6 @@ ELECTRON_MAIN_ENTRIES = (
     ".vite/build/bootstrap.js",
     ".vite/build/early-bootstrap.js",
 )
-DMG_MOUNT_DIR = Path(tempfile.gettempdir()) / "codex-dmg-mount"
-MACOS_VOLUMES_DIR = Path(
-    os.environ.get("CODEX_BACKGROUND_SHELL_VOLUMES_DIR", str(Path(Path.cwd().anchor) / "Volumes"))
-).expanduser()
 
 OLD_PATCH_MARKERS = (
     b"__codexBackgroundTerminal",
@@ -96,6 +93,7 @@ NEW_PATCH_MARKERS = (
 
 NATIVE_PATCH_MARKERS = (
     b"run_in_background",
+    b"Do not start a background helper whose only purpose is to wait",
     b"thread/backgroundTerminals/backgroundActive",
     b"foreground_adopt",
     b"auto_threshold",
@@ -108,14 +106,34 @@ NATIVE_PATCH_MARKERS = (
     b"idle_direct_turn",
 )
 
+FORBIDDEN_PERSISTENCE_SNIPPETS = (
+    "## Autonomy and Persistence",
+    "## Autonomy and persistence",
+    "Persist until the task is fully handled end-to-end within the current turn whenever feasible",
+    "You are a coding agent. You must keep going until the query or task is completely resolved",
+    "You are a coding agent. Please keep going until the query is completely resolved",
+)
+
+PERSISTENCE_PROMPT_PATHS = (
+    "codex-rs/core/gpt_5_1_prompt.md",
+    "codex-rs/core/gpt_5_2_prompt.md",
+    "codex-rs/core/prompt_with_apply_patch_instructions.md",
+    "codex-rs/models-manager/models.json",
+    "codex-rs/models-manager/prompt.md",
+    "codex-rs/protocol/src/prompts/base_instructions/default.md",
+)
+
 SCENARIO_TESTS = {
     "explicit-background": (
         ("codex-core", "explicit_background_exec_returns_session_without_waiting"),
         ("codex-core", "shell_command_run_in_background_registers_native_terminal"),
     ),
     "foreground-to-background": ("codex-core", "manual_background_request_wakes_initial_exec"),
-    "auto-threshold-450s": ("codex-core", "auto_background_threshold_is_450_seconds"),
-    "timeout-to-background": ("codex-core", "yield_timeout_background_exec_records_timeout_source"),
+    "auto-threshold-300s": ("codex-core", "auto_background_threshold_is_300_seconds"),
+    "foreground-timeout-hidden": (
+        "codex-core",
+        "yield_timeout_foreground_exec_is_not_listed_as_background",
+    ),
     "ctrl-b": ("codex-core", "user_shortcut_background_request_records_user_shortcut_source"),
     "summary-output": ("codex-core", "background_terminal_summary_exposes_command_title"),
     "stop-restart": ("codex-core", "background_terminal_native_terminate_controls_single_process"),
@@ -126,8 +144,8 @@ SCENARIO_TESTS = {
 FULL_VERIFY_SCENARIOS = (
     ("T1", "explicit-background"),
     ("T2", "foreground-to-background"),
-    ("T3", "auto-threshold-450s"),
-    ("T4", "timeout-to-background"),
+    ("T3", "auto-threshold-300s"),
+    ("T4", "foreground-timeout-hidden"),
     ("T5", "ctrl-b"),
     ("T6", "summary-output"),
     ("T7", "busy-wakeup-30s"),
@@ -555,7 +573,7 @@ def analyze_app(app: Path, *, role: str) -> dict[str, Any]:
 
 def mounted_codex_apps() -> list[Path]:
     candidates: list[Path] = []
-    volumes = [MACOS_VOLUMES_DIR, DMG_MOUNT_DIR]
+    volumes = [Path("/Volumes"), Path("/private/tmp/codex-dmg-mount")]
     for volume in volumes:
         if not volume.exists():
             continue
@@ -658,56 +676,6 @@ def prepare_user_copy(*, yes: bool) -> dict[str, Any]:
     }
 
 
-def first_shell_segment(command: str) -> str:
-    quote: str | None = None
-    escaped = False
-    index = 0
-    segment: list[str] = []
-    while index < len(command):
-        char = command[index]
-        if escaped:
-            segment.append(char)
-            escaped = False
-            index += 1
-            continue
-        if char == "\\":
-            segment.append(char)
-            escaped = True
-            index += 1
-            continue
-        if quote:
-            segment.append(char)
-            if char == quote:
-                quote = None
-            index += 1
-            continue
-        if char in ("'", '"'):
-            quote = char
-            segment.append(char)
-            index += 1
-            continue
-        if char == "\n" or char == ";":
-            break
-        if command[index : index + 2] in ("&&", "||"):
-            break
-        segment.append(char)
-        index += 1
-    return "".join(segment).strip()
-
-
-def blocked_sleep_seconds(command: str) -> int | None:
-    segment = first_shell_segment(command)
-    match = re.fullmatch(r"sleep\s+([0-9]+)", segment)
-    if match is None:
-        return None
-    seconds = int(match.group(1))
-    return seconds if seconds >= 2 else None
-
-
-def is_leading_sleep(command: str) -> bool:
-    return blocked_sleep_seconds(command) is not None
-
-
 def self_test() -> dict[str, Any]:
     checks = []
 
@@ -715,18 +683,16 @@ def self_test() -> dict[str, Any]:
         checks.append({"name": name, "ok": bool(condition)})
 
     check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
-    check("auto threshold is 450 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 450)
-    check("leading sleep detected", is_leading_sleep("sleep 10"))
-    check("leading sleep followed by shell op detected", is_leading_sleep("sleep 10 && echo done"))
-    check("sleep below two seconds not detected", not is_leading_sleep("sleep 1"))
-    check("fractional sleep not detected", not is_leading_sleep("sleep 0.5"))
-    check("bin sleep not detected", not is_leading_sleep("/bin/sleep 10"))
-    check("env sleep not detected", not is_leading_sleep("env sleep 10"))
-    check("non-leading sleep not detected", not is_leading_sleep("pwd && sleep 10"))
-    check("shell wrapper is not leading sleep", not is_leading_sleep("sh -c 'sleep 10'"))
+    check("source head is pinned to the supported app release", len(EXPECTED_SOURCE_HEAD) == 40)
+    check("Codex version is pinned to 0.144.2", EXPECTED_CODEX_VERSION == "codex-cli 0.144.2")
+    check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
     check("busy wakeup scenario is registered", "busy-wakeup-30s" in SCENARIO_TESTS)
     check("idle wakeup scenario is registered", "idle-wakeup-2min" in SCENARIO_TESTS)
     check("background wakeup native marker is required", b"background_wakeup" in NATIVE_PATCH_MARKERS)
+    check(
+        "background waiter guidance marker is required",
+        b"Do not start a background helper whose only purpose is to wait" in NATIVE_PATCH_MARKERS,
+    )
     check("guided stuck marker is required", b"guided-message-stuck" in NATIVE_PATCH_MARKERS)
     merged_text, merged_step = replace_text_variants_in_text(
         "alpha beta gamma",
@@ -1489,7 +1455,7 @@ def analyze_native() -> dict[str, Any]:
                     "shell_command": ["command", "workdir", "timeout_ms", "run_in_background"],
                     "exec_command": ["cmd", "workdir", "yield_time_ms", "max_output_tokens", "run_in_background"],
                 },
-                "processStore": "UnifiedExecProcessManager stores live processes before initial yield so they can remain listed as background terminals.",
+                "processStore": "UnifiedExecProcessManager stores live processes before initial yield, but lists only entries that explicitly transitioned to background state.",
                 "autoBackgroundThresholdMs": AUTO_BACKGROUND_THRESHOLD_SECONDS * 1000,
                 "defaultMaxBackgroundTerminalTimeoutMs": 300_000,
                 "maxYieldTimeMs": 30_000,
@@ -1523,6 +1489,8 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
             "target": str(BUILT_CODEX_BINARY),
             "type": "cargo-build",
             "sourceRepo": str(UPSTREAM_CODEX_REPO),
+            "sourceHead": EXPECTED_SOURCE_HEAD,
+            "codexVersion": EXPECTED_CODEX_VERSION,
             "sourcePatch": patch_file_summary(NATIVE_PATCH_FILE),
             "purpose": "Build the patched Codex native binary that owns background terminal semantics.",
         },
@@ -1572,30 +1540,126 @@ def build_patch_plan(app: Path) -> list[dict[str, Any]]:
 
 
 def cargo_env() -> dict[str, str]:
-    path = os.environ.get("PATH", "")
-    if RUST_TOOLCHAIN_DIR is not None:
-        path = f"{RUST_TOOLCHAIN_DIR}:{path}"
     return {
         "CODEX_SANDBOX": "",
         "RUST_MIN_STACK": str(8 * 1024 * 1024),
         "RUSTC": str(RUSTC),
-        "PATH": path,
+        "PATH": f"{RUST_TOOLCHAIN}:{os.environ.get('PATH', '')}",
     }
 
 
-def executable_available(path: Path) -> bool:
-    return path.exists() or shutil.which(str(path)) is not None
+def normalized_patch_text(text: str) -> str:
+    return text.replace("\r\n", "\n").rstrip() + "\n"
+
+
+def native_source_diff() -> CommandResult:
+    return run(
+        ["git", "diff", "--binary", "--", ".", ":(exclude)codex-rs/Cargo.lock"],
+        cwd=UPSTREAM_CODEX_REPO,
+    )
+
+
+def prepare_native_source() -> dict[str, Any]:
+    if not UPSTREAM_CODEX_REPO.exists():
+        raise ControllerError(
+            "native-source-missing",
+            "Codex Rust source checkout was not found.",
+            details={"path": str(UPSTREAM_CODEX_REPO)},
+        )
+    if not NATIVE_PATCH_FILE.exists():
+        raise ControllerError(
+            "native-patch-missing",
+            "Native background terminal patch file was not found.",
+            details={"path": str(NATIVE_PATCH_FILE)},
+        )
+
+    source_head = git_value(UPSTREAM_CODEX_REPO, ["rev-parse", "HEAD"])
+    if source_head != EXPECTED_SOURCE_HEAD:
+        raise ControllerError(
+            "native-source-version-mismatch",
+            "Native source checkout does not match the Codex App version supported by this patch.",
+            details={"expectedHead": EXPECTED_SOURCE_HEAD, "actualHead": source_head},
+        )
+
+    diff_check = run(["git", "diff", "--check"], cwd=UPSTREAM_CODEX_REPO)
+    if diff_check.returncode != 0:
+        raise ControllerError(
+            "native-source-diff-invalid",
+            "Native source checkout contains an invalid diff.",
+            details=diff_check.as_dict(),
+        )
+
+    worktree_diff = native_source_diff()
+    if worktree_diff.returncode != 0:
+        raise ControllerError(
+            "native-source-diff-failed",
+            "Could not inspect the native source patch state.",
+            details=worktree_diff.as_dict(),
+        )
+
+    patch_applied = False
+    if not worktree_diff.stdout:
+        apply_result = run(
+            ["git", "apply", "--whitespace=nowarn", str(NATIVE_PATCH_FILE)],
+            cwd=UPSTREAM_CODEX_REPO,
+        )
+        if apply_result.returncode != 0:
+            raise ControllerError(
+                "native-patch-apply-failed",
+                "Native background terminal patch did not apply to the supported Codex source.",
+                details=apply_result.as_dict(),
+            )
+        patch_applied = True
+        worktree_diff = native_source_diff()
+
+    expected_patch = normalized_patch_text(NATIVE_PATCH_FILE.read_text(encoding="utf-8"))
+    actual_patch = normalized_patch_text(worktree_diff.stdout)
+    if actual_patch != expected_patch:
+        raise ControllerError(
+            "native-source-patch-mismatch",
+            "Native source changes do not exactly match the audited patch file.",
+            details={
+                "sourceRepo": str(UPSTREAM_CODEX_REPO),
+                "patchFile": str(NATIVE_PATCH_FILE),
+                "expectedPatchSha256": hashlib.sha256(expected_patch.encode()).hexdigest(),
+                "actualPatchSha256": hashlib.sha256(actual_patch.encode()).hexdigest(),
+            },
+        )
+
+    persistence_matches: list[dict[str, str]] = []
+    for relative_path in PERSISTENCE_PROMPT_PATHS:
+        path = UPSTREAM_CODEX_REPO / relative_path
+        text = path.read_text(encoding="utf-8")
+        for snippet in FORBIDDEN_PERSISTENCE_SNIPPETS:
+            if snippet in text:
+                persistence_matches.append({"path": relative_path, "snippet": snippet})
+    if persistence_matches:
+        raise ControllerError(
+            "global-persistence-prompt-present",
+            "Global persistence instructions are still present in the patched native source.",
+            details={"matches": persistence_matches},
+        )
+
+    return {
+        "head": source_head,
+        "patchApplied": patch_applied,
+        "patchFile": patch_file_summary(NATIVE_PATCH_FILE),
+        "patchSha256": hashlib.sha256(expected_patch.encode()).hexdigest(),
+        "diffCheck": diff_check.as_dict(),
+        "persistencePromptCheck": {"ok": True, "paths": list(PERSISTENCE_PROMPT_PATHS)},
+    }
 
 
 def build_native_binary() -> dict[str, Any]:
     if not CODEX_RS.exists():
         raise ControllerError("native-source-missing", "Codex Rust source checkout was not found.", details={"path": str(CODEX_RS)})
-    if not executable_available(CARGO) or not executable_available(RUSTC):
+    if not CARGO.exists() or not RUSTC.exists():
         raise ControllerError(
             "native-toolchain-missing",
-            "Rust toolchain was not found. Put cargo/rustc on PATH or set CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN.",
+            "Expected Rust 1.95 toolchain was not found.",
             details={"cargo": str(CARGO), "rustc": str(RUSTC)},
         )
+    source_validation = prepare_native_source()
     before_hash = sha256(BUILT_CODEX_BINARY)
     build = run(
         [str(CARGO), "build", "-p", "codex-cli", "--release"],
@@ -1616,6 +1680,12 @@ def build_native_binary() -> dict[str, Any]:
     if after_hash is None:
         raise ControllerError("native-build-missing", "Patched Codex native binary was not produced.", details=build.as_dict())
     version = run([str(BUILT_CODEX_BINARY), "--version"], timeout=20)
+    if version.returncode != 0 or version.stdout != EXPECTED_CODEX_VERSION:
+        raise ControllerError(
+            "native-build-version-mismatch",
+            "Built Codex binary version does not match the supported Codex App version.",
+            details={"expected": EXPECTED_CODEX_VERSION, "versionCommand": version.as_dict()},
+        )
     markers = file_contains_any(BUILT_CODEX_BINARY, NATIVE_PATCH_MARKERS)
     if sorted(markers) != sorted(marker.decode("utf-8", "replace") for marker in NATIVE_PATCH_MARKERS):
         raise ControllerError(
@@ -1627,6 +1697,7 @@ def build_native_binary() -> dict[str, Any]:
         "name": "native-codex-binary-build",
         "ok": True,
         "sourceRepo": str(UPSTREAM_CODEX_REPO),
+        "sourceValidation": source_validation,
         "workdir": str(CODEX_RS),
         "binary": str(BUILT_CODEX_BINARY),
         "beforeSha256": before_hash,
@@ -4028,6 +4099,16 @@ def apply_patch_to_user_copy(*, yes: bool, allow_running: bool = False) -> dict[
     target_before = analyze_app(app, role="patch-target-before")
     if not target_before.get("exists"):
         raise ControllerError("patch-target-missing", "Configured Codex.app target does not exist.", details=target_before)
+    if target_before.get("codexVersion") != EXPECTED_CODEX_VERSION:
+        raise ControllerError(
+            "patch-target-version-mismatch",
+            "Configured Codex.app version is not supported by this patch revision.",
+            details={
+                "expected": EXPECTED_CODEX_VERSION,
+                "actual": target_before.get("codexVersion"),
+                "app": str(app),
+            },
+        )
     if target_before.get("oldPatchMarkers"):
         raise ControllerError("old-patch-not-removed", "Old patch markers are still present.", details=target_before)
     running_before = app_processes(app)

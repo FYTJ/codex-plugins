@@ -13,6 +13,10 @@ import codex_background_terminal_patch_app as m
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
 SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.144.2"}
+SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
+    "codex-cli 0.144.0-alpha.4",
+    "codex-cli 0.144.2",
+}
 
 
 def find_text_entry(
@@ -259,7 +263,22 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         header,
         data_offset,
         step_name="ctrl-b-keydown-path",
-        include_any=(keydown_before_old, keydown_before_new, keydown_before_current, keydown_before_5059, keydown_before_5103, keydown_before_5200, keydown_before_5211, m.CTRL_B_ACTION),
+        include_any=(
+            keydown_before_old,
+            keydown_before_new,
+            keydown_before_current,
+            keydown_before_5059,
+            keydown_before_5103,
+            keydown_before_5200,
+            keydown_before_5211,
+            keydown_after_old,
+            keydown_after_new,
+            keydown_after_current,
+            keydown_after_5059,
+            keydown_after_5103,
+            keydown_after_5200,
+            keydown_after_5211,
+        ),
         path_prefix="webview/assets/",
     )
 
@@ -587,6 +606,14 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     ).replace(
         anonymous_5200_before,
         anonymous_5200_after,
+    )
+    # Build 5211 derives `_` from historical commandExecution items whose UI status may
+    # remain inProgress after a protocol-mismatched CLI has already completed them.
+    # The native endpoint is the authoritative live-background registry for this patch,
+    # so never merge those historical rows back into the background summary.
+    summary_5211_authoritative_after = summary_5211_stable_after.replace(
+        anonymous_5200_after,
+        "v=Bt;",
     )
     legacy_summary_variants = [
         (value.replace(summary_mapping_fields, ""), value)
@@ -1082,6 +1109,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (summary_5059_after, summary_5059_stable_after),
                 (summary_5200_before, summary_5200_after),
                 (summary_5211_before, summary_5211_stable_after),
+                (summary_5211_before, summary_5211_authoritative_after),
                 *legacy_summary_variants,
             ],
         ),
@@ -1100,7 +1128,12 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (anonymous_current_before, anonymous_current_after),
                 (anonymous_5059_before, anonymous_5059_after),
                 (anonymous_5200_before, anonymous_5200_after),
+                (anonymous_5200_before, "v=Bt;"),
             ],
+        ),
+        (
+            "task005-native-list-authoritative",
+            [(summary_5211_stable_after, summary_5211_authoritative_after)],
         ),
         (
             "task005-drop-anonymous-terminal-registered-rows",
@@ -1117,8 +1150,11 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (stop_5059_before, stop_5059_after),
                 (stop_5059_before, stop_5059_native_first_after),
                 (stop_5103_before, stop_5103_after),
+                (stop_5103_before, stop_5103_native_first_after),
                 (stop_5200_before, stop_5200_after),
+                (stop_5200_before, stop_5200_native_first_after),
                 (stop_5211_before, stop_5211_after),
+                (stop_5211_before, stop_5211_native_first_after),
             ],
         ),
         (
@@ -1134,8 +1170,11 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (restart_5059_before, restart_5059_after),
                 (restart_5059_before, restart_5059_native_first_after),
                 (restart_5103_before, restart_5103_after),
+                (restart_5103_before, restart_5103_native_first_after),
                 (restart_5200_before, restart_5200_after),
+                (restart_5200_before, restart_5200_native_first_after),
                 (restart_5211_before, restart_5211_after),
+                (restart_5211_before, restart_5211_native_first_after),
             ],
         ),
         (
@@ -1487,11 +1526,15 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
             or "n=[...Bt,...n.filter" in local_text
             or "g=[...Bt,...g.filter" in local_text
             or "v=[...Bt,...v.filter" in local_text
+            or "v=Bt;" in local_text
         ),
         "summaryMapsNativeBackgroundTerminalOutput": "output:String(e.output??``)" in local_text,
         "summaryPreservesLastKnownCommand": "new Map(t.map(e=>[e.id,e.command]))" in local_text,
         "summaryDropsAnonymousTerminalRows": (
-            "filter(e=>String(e.command??``).trim().length>0)" in local_text
+            (
+                "v=Bt;" in local_text
+                or "filter(e=>String(e.command??``).trim().length>0)" in local_text
+            )
             and "filter(e=>String(e.terminal.command??``).trim().length>0)" in local_text
         ),
         "summaryUsesCommandTitle": "e.terminal.command.length>0?e.terminal.command" in local_text,
@@ -1544,6 +1587,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
             "outputCommandPropCount": automations_text.count("props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``}"),
             "listMethodCount": list_method_count,
             "terminateMethodCount": terminate_method_count,
+            "nativeAuthoritativeListCount": local_text.count("v=Bt;"),
         },
         "syntaxCheck": syntax_check,
         "outputTabSyntaxCheck": automations_syntax_check,
@@ -1586,11 +1630,13 @@ def scan_app_control_bridge(app: Path) -> dict[str, Any]:
 def analyze_app_compatible(app: Path, *, role: str) -> dict[str, Any]:
     result = ORIG_ANALYZE_APP(app, role=role)
     actual_version = result.get("codexVersion")
+    previously_patched = bool(result.get("newPatchMarkers") or result.get("nativePatchMarkers"))
     if (
         role == "patch-target-before"
-        and actual_version in SUPPORTED_UNPATCHED_CODEX_VERSIONS
-        and not result.get("newPatchMarkers")
-        and not result.get("nativePatchMarkers")
+        and (
+            (actual_version in SUPPORTED_UNPATCHED_CODEX_VERSIONS and not previously_patched)
+            or (actual_version in SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS and previously_patched)
+        )
     ):
         result["installedCodexVersionBeforePatch"] = actual_version
         result["nativeCompatibilityBinary"] = m.EXPECTED_CODEX_VERSION
