@@ -41,6 +41,8 @@ git apply ../../scripts/openai-codex-background-shell.patch
 
 build 5211 与 5307 的摘要栏只以 native `thread/backgroundTerminals/list` 返回值作为后台任务事实来源，不再合并会话历史中残留的 `commandExecution status=inProgress` 行。build 5307 新增的 `chat-processes` 注册行同样不会混入摘要栏。这样，已经在前台正常完成的 `sed`、`rg`、`git status` 等普通命令不会被误显示为后台进程。
 
+build 5307 的摘要组件补丁不会改写官方 React 编译产物中的 `backgroundTerminals` / `registeredRows` 常量绑定，而是通过独立的 `BtRows` 局部变量映射 native 列表；host action 也通过模块级别别名调用，避免被组件的 `processSnapshotTimeMs` 参数同名遮蔽。轮询仅在摘要可见时运行，无数据变化时保留原 state 引用。该修复消除了重启后存在后台进程时触发的 `Assignment to constant variable.` 错误边界，并保持重复执行 patch 的幂等性。
+
 控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 
 ```text
