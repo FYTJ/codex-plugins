@@ -535,8 +535,12 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
         "v;bb0:{"
     )
-    background_action_alias = "__codexBackgroundTerminalAction"
+    background_action_alias = "__backgroundTerminalHostAction"
+    background_action_alias_legacy = "__codexBackgroundTerminalAction"
     background_action_alias_before = "var wh=e((()=>{md(),Ed()}));function Th(e){"
+    background_action_alias_legacy_after = (
+        f"var wh=e((()=>{{md(),Ed()}}));const {background_action_alias_legacy}=s;function Th(e){{"
+    )
     background_action_alias_after = (
         f"var wh=e((()=>{{md(),Ed()}}));const {background_action_alias}=s;function Th(e){{"
     )
@@ -560,6 +564,10 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "e.startedAtMs===r.startedAtMs&&e.turnId===r.turnId})?t:n})}"
         "catch{e||BtSet(e=>e.length===0?e:[])}};t();let r=setInterval(t,1e3);"
         "return()=>{e=!0,clearInterval(r)}},[i,o]);let BtRows=Bt;v;bb0:{"
+    )
+    summary_5307_legacy_alias_after = summary_5307_after.replace(
+        background_action_alias,
+        background_action_alias_legacy,
     )
     preserve_command_current_before = (
         "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
@@ -980,6 +988,10 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         f"{call}(`{m.TERMINATE_BG_ACTION}`",
         f"{background_action_alias}(`{m.TERMINATE_BG_ACTION}`",
     )
+    stop_5307_legacy_alias_after = stop_5307_after.replace(
+        background_action_alias,
+        background_action_alias_legacy,
+    )
 
     restart_old_before = (
         "N=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
@@ -1178,6 +1190,10 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         f"{call}(`{m.TERMINATE_BG_ACTION}`",
         f"{background_action_alias}(`{m.TERMINATE_BG_ACTION}`",
     )
+    restart_5307_legacy_alias_after = restart_5307_after.replace(
+        background_action_alias,
+        background_action_alias_legacy,
+    )
 
     summary_stop_all_before = (
         f"h=e=>{{a==null||d!=null||(f(e.id),{call}(`clean-background-terminals`,"
@@ -1292,6 +1308,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         marker in text
         for marker in (
             background_action_alias_before,
+            background_action_alias_legacy_after,
             background_action_alias_after,
             summary_5307_before,
             summary_5307_broken_authoritative_after,
@@ -1303,7 +1320,10 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
             [
                 (
                     "task005-background-terminal-action-alias",
-                    [(background_action_alias_before, background_action_alias_after)],
+                    [
+                        (background_action_alias_before, background_action_alias_after),
+                        (background_action_alias_legacy_after, background_action_alias_after),
+                    ],
                 )
             ]
             if is_build_5307
@@ -1327,6 +1347,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (summary_5307_before, summary_5307_stable_after),
                 (summary_5307_before, summary_5307_authoritative_after),
                 (summary_5307_broken_authoritative_after, summary_5307_authoritative_after),
+                (summary_5307_legacy_alias_after, summary_5307_authoritative_after),
                 (summary_5307_old_authoritative_after, summary_5307_authoritative_after),
                 *legacy_summary_variants,
             ],
@@ -1399,6 +1420,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (stop_5211_before, stop_5211_native_first_after),
                 (stop_5307_before, stop_5307_after),
                 (stop_5307_shadowed_after, stop_5307_after),
+                (stop_5307_legacy_alias_after, stop_5307_after),
             ],
         ),
         (
@@ -1421,6 +1443,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (restart_5211_before, restart_5211_native_first_after),
                 (restart_5307_before, restart_5307_after),
                 (restart_5307_shadowed_after, restart_5307_after),
+                (restart_5307_legacy_alias_after, restart_5307_after),
             ],
         ),
         (
@@ -1784,13 +1807,15 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         f"Br(`{m.LIST_BG_ACTION}`,{{conversationId:o,cursor:null,limit:50}})",
         f"wn(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}})",
         f"s(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
+        f"__backgroundTerminalHostAction(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
         f"__codexBackgroundTerminalAction(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
     ]
     uses_5307_local_binding = (
-        "const __codexBackgroundTerminalAction=s;function Th(e){" in local_text
+        "const __backgroundTerminalHostAction=s;function Th(e){" in local_text
+        or "const __codexBackgroundTerminalAction=s;function Th(e){" in local_text
         or "let BtRows=Bt;v;bb0:{" in local_text
     )
-    action_dispatchers = {call, "s", "__codexBackgroundTerminalAction"}
+    action_dispatchers = {call, "s", "__backgroundTerminalHostAction", "__codexBackgroundTerminalAction"}
     checks = {
         "summaryPollsNativeBackgroundTerminalList": any(call in local_text for call in list_calls),
         "summaryMergesNativeBackgroundTerminalList": (
@@ -1827,11 +1852,12 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         "summaryUsesUnshadowedActionAlias": (
             not uses_5307_local_binding
             or (
-                "const __codexBackgroundTerminalAction=s;function Th(e){" in local_text
-                and f"__codexBackgroundTerminalAction(`{m.LIST_BG_ACTION}`" in local_text
-                and local_text.count(f"__codexBackgroundTerminalAction(`{m.TERMINATE_BG_ACTION}`") >= 2
+                "const __backgroundTerminalHostAction=s;function Th(e){" in local_text
+                and f"__backgroundTerminalHostAction(`{m.LIST_BG_ACTION}`" in local_text
+                and local_text.count(f"__backgroundTerminalHostAction(`{m.TERMINATE_BG_ACTION}`") >= 2
             )
         ),
+        "summaryAvoidsReservedLegacyMarker": "__codexBackgroundTerminalAction" not in local_text,
         "summaryPollingRunsOnlyWhileVisible": (
             not uses_5307_local_binding or "if(i==null||!o)" in local_text and "},[i,o]);let BtRows=Bt;" in local_text
         ),
@@ -1935,6 +1961,25 @@ def analyze_app_compatible(app: Path, *, role: str) -> dict[str, Any]:
     result = ORIG_ANALYZE_APP(app, role=role)
     actual_version = result.get("codexVersion")
     previously_patched = bool(result.get("newPatchMarkers") or result.get("nativePatchMarkers"))
+    legacy_alias_migration = (
+        role == "patch-target-before"
+        and result.get("oldPatchMarkers") == ["__codexBackgroundTerminal"]
+        and m.file_contains_any(
+            m.app_paths(app)["asar"],
+            (b"__codexBackgroundTerminalAction",),
+        )
+        == ["__codexBackgroundTerminalAction"]
+        and m.LIST_BG_ACTION in result.get("newPatchMarkers", [])
+        and m.TERMINATE_BG_ACTION in result.get("newPatchMarkers", [])
+    )
+    if legacy_alias_migration:
+        result["legacyActionAliasMigrationPending"] = True
+        result["oldPatchMarkers"] = []
+        result["cleanSourceRejectReasons"] = [
+            reason
+            for reason in result.get("cleanSourceRejectReasons", [])
+            if reason != "old-patch-markers-present"
+        ]
     if (
         role == "patch-target-before"
         and (
