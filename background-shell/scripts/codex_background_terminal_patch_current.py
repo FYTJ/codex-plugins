@@ -66,6 +66,8 @@ def find_text_entry(
 
 
 def action_fn(text: str) -> str:
+    if "s(`clean-background-terminals`" in text or "s(`list-background-terminals`" in text:
+        return "s"
     if "wn(`clean-background-terminals`" in text or "wn(`list-background-terminals`" in text:
         return "wn"
     if "Br(`clean-background-terminals`" in text or "Br(`list-background-terminals`" in text:
@@ -258,6 +260,16 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[V.value]);"
         "let{serviceTierSettings:xe}=K_(X)"
     )
+    keydown_before_5307 = "MT(`composer.togglePlanMode`,be,Se);let{serviceTierSettings:Ce}=al(q)"
+    keydown_after_5307 = (
+        "MT(`composer.togglePlanMode`,be,Se);"
+        "(0,yX.useEffect)(()=>{let e=e=>{e.type===`keydown`&&e.key.toLowerCase()===`b`&&"
+        "e.ctrlKey===!0&&e.metaKey!==!0&&e.altKey!==!0&&e.shiftKey!==!0&&"
+        "V.value.kind===`local`&&V.value.conversationId!=null&&"
+        f"(e.preventDefault(),e.stopPropagation(),s(`{m.CTRL_B_ACTION}`,{{conversationId:V.value.conversationId}}).catch(e=>{{}}))}};"
+        "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[V.value]);"
+        "let{serviceTierSettings:Ce}=al(q)"
+    )
     keydown_rel = find_text_entry(
         asar_path,
         header,
@@ -271,6 +283,7 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
             keydown_before_5103,
             keydown_before_5200,
             keydown_before_5211,
+            keydown_before_5307,
             keydown_after_old,
             keydown_after_new,
             keydown_after_current,
@@ -278,6 +291,7 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
             keydown_after_5103,
             keydown_after_5200,
             keydown_after_5211,
+            keydown_after_5307,
         ),
         path_prefix="webview/assets/",
     )
@@ -322,6 +336,7 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         (keydown_before_5103, keydown_after_5103),
         (keydown_before_5200, keydown_after_5200),
         (keydown_before_5211, keydown_after_5211),
+        (keydown_before_5307, keydown_after_5307),
     ]
 
     if command_rel == keydown_rel:
@@ -503,6 +518,23 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
         "let y;t[2]!==s||t[3]!==a||t[4]!==c||t[5]!==o||t[6]!==l?"
     )
+    summary_5307_before = "g=yn(`child-process-kill`),_=yn(`chat-process-register`),v;bb0:{"
+    summary_5307_after = (
+        "g=yn(`child-process-kill`),_=yn(`chat-process-register`),"
+        "[Bt,BtSet]=(0,Fh.useState)([]);"
+        "(0,Fh.useEffect)(()=>{if(i==null){BtSet([]);return}let e=!1,t=async()=>{try{let r=await "
+        f"{call}(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}});"
+        "if(e)return;let a=Array.isArray(r?.data)?r.data:[];"
+        "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
+        "source:String(e.source??``),status:`running`,output:String(e.output??``),"
+        "startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))}"
+        "catch{e||BtSet([])}};t();let r=setInterval(t,1e3);return()=>{e=!0,clearInterval(r)}},[i]);"
+        "Bt.length>0&&(n=[...Bt,...n.filter(e=>!Bt.some(t=>t.id===e.id||"
+        "e.processId!=null&&t.processId===e.processId||"
+        "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
+        "v;bb0:{"
+    )
     preserve_command_current_before = (
         "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
         "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
@@ -545,6 +577,20 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "source:String(e.source??``),status:`running`,output:String(e.output??``),"
         "startedAtMs:e.startedAtMs??null,turnId:e.turnId??null}})})"
     )
+    preserve_command_5307_before = (
+        "BtSet(a.map(e=>({id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
+        "source:String(e.source??``),status:`running`,output:String(e.output??``),"
+        "startedAtMs:e.startedAtMs??null,turnId:e.turnId??null})))"
+    )
+    preserve_command_5307_after = (
+        "BtSet(t=>{let r=new Map(t.map(e=>[e.id,e.command]));return a.map(e=>{"
+        "let t=String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "c=String(e.command??``).trim()||r.get(t)||``;"
+        "return{id:t,command:c,cwd:e.cwd??null,processId:e.processId??null,"
+        "source:String(e.source??``),status:`running`,output:String(e.output??``),"
+        "startedAtMs:e.startedAtMs??null,turnId:e.turnId??null}})})"
+    )
     anonymous_summary_before = (
         "Bt.length>0&&(f=[...Bt,...f.filter(e=>!Bt.some(t=>t.id===e.id||"
         "e.processId!=null&&t.processId===e.processId||"
@@ -578,6 +624,12 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
     )
     anonymous_5200_after = anonymous_5200_before + "v=v.filter(e=>String(e.command??``).trim().length>0);"
+    anonymous_5307_before = (
+        "Bt.length>0&&(n=[...Bt,...n.filter(e=>!Bt.some(t=>t.id===e.id||"
+        "e.processId!=null&&t.processId===e.processId||"
+        "e.command===t.command&&e.cwd===t.cwd&&e.turnId===t.turnId))]);"
+    )
+    anonymous_5307_after = anonymous_5307_before + "n=n.filter(e=>String(e.command??``).trim().length>0);"
     anonymous_registered_row_before = "let b=y,x;t[15]!==m||t[16]!==s||t[17]!==b?"
     anonymous_registered_row_after = (
         "let b=y.filter(e=>String(e.terminal.command??``).trim().length>0),x;"
@@ -614,6 +666,23 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     summary_5211_authoritative_after = summary_5211_stable_after.replace(
         anonymous_5200_after,
         "v=Bt;",
+    )
+    summary_5307_stable_after = summary_5307_after.replace(
+        preserve_command_5307_before,
+        preserve_command_5307_after,
+    ).replace(
+        anonymous_5307_before,
+        anonymous_5307_after,
+    )
+    # Build 5307 additionally synthesizes registered rows from chat-processes. Both
+    # historical command rows and registered rows are non-authoritative for this patch.
+    summary_5307_authoritative_after = summary_5307_stable_after.replace(
+        anonymous_5307_after,
+        "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];",
+    )
+    summary_5307_old_authoritative_after = summary_5307_stable_after.replace(
+        anonymous_5307_after,
+        "n=Bt;c=[];",
     )
     legacy_summary_variants = [
         (value.replace(summary_mapping_fields, ""), value)
@@ -832,6 +901,28 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "if(m.current){rs(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
         "ns(p,e.process.id)},()=>{u(),ns(p,e.process.id)}))}"
     )
+    stop_5307_before = (
+        "A=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "if(m.current){Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "xd(p,e.process.id)},()=>{u(),xd(p,e.process.id)}))}"
+    )
+    stop_5307_after = (
+        "A=(e,t)=>{let n=e.metrics?.pid;"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null?"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(n=>{{"
+        "if(n?.terminated===!1||n?.data?.terminated===!1){u();xd(p,e.process.id);return}"
+        "if(m.current){Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "xd(p,e.process.id)},()=>{u(),xd(p,e.process.id)})):n!=null&&"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "if(m.current){Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "xd(p,e.process.id)},()=>{u(),xd(p,e.process.id)}))}"
+    )
 
     restart_old_before = (
         "N=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
@@ -1007,6 +1098,25 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "if(!r)throw Error(`Process is no longer running`);"
         "P(e,t)},()=>{l(),ns(p,e.process.id)}))}"
     )
+    restart_5307_before = (
+        "P=(e,t)=>{let n=e.metrics?.pid;n!=null&&"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "N(e,t)},()=>{l(),xd(p,e.process.id)}))}"
+    )
+    restart_5307_after = (
+        "P=(e,t)=>{let n=e.metrics?.pid;"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null?"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.terminal.processId}}).then(n=>{{"
+        "if(n?.terminated===!1||n?.data?.terminated===!1){l();xd(p,e.process.id);return}"
+        "N(e,t)},()=>{l(),xd(p,e.process.id)})):n!=null&&"
+        "(Rd(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:n}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "N(e,t)},()=>{l(),xd(p,e.process.id)}))}"
+    )
 
     summary_stop_all_before = (
         f"h=e=>{{a==null||d!=null||(f(e.id),{call}(`clean-background-terminals`,"
@@ -1027,6 +1137,16 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.processId}}).then(e=>{{"
         "if(e?.terminated===!1||e?.data?.terminated===!1)throw Error(`Process is no longer running`)"
         "}).catch(c).finally(()=>d(null)))}"
+    )
+    summary_stop_all_5307_before = (
+        f"h=e=>{{i==null||d!=null||(f(e.id),{call}(`clean-background-terminals`,"
+        "{conversationId:i}).catch(l).finally(()=>f(null)))}"
+    )
+    summary_stop_single_5307_after = (
+        "h=e=>{i==null||d!=null||e.processId==null||(f(e.id),"
+        f"{call}(`{m.TERMINATE_BG_ACTION}`,{{conversationId:i,processId:e.processId}}).then(e=>{{"
+        "if(e?.terminated===!1||e?.data?.terminated===!1)throw Error(`Process is no longer running`)"
+        "}).catch(l).finally(()=>f(null)))}"
     )
     summary_stop_all_5211_before = (
         f"g=e=>{{i==null||u!=null||(d(e.id),{call}(`clean-background-terminals`,"
@@ -1086,6 +1206,11 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         "O=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
         "?(0,Ih.jsx)(J,{...Rh.stopMissingProcessTooltip}):void 0"
     )
+    stop_tooltip_5307_before = "O=o.metrics?.pid==null?(0,Ih.jsx)(q,{...Rh.stopMissingProcessTooltip}):void 0"
+    stop_tooltip_5307_after = (
+        "O=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
+        "?(0,Ih.jsx)(q,{...Rh.stopMissingProcessTooltip}):void 0"
+    )
     stop_tooltip_5211_before = "A=o.metrics?.pid==null?(0,Ih.jsx)(h,{...Rh.stopMissingProcessTooltip}):void 0"
     stop_tooltip_5211_after = (
         "A=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
@@ -1110,6 +1235,9 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (summary_5200_before, summary_5200_after),
                 (summary_5211_before, summary_5211_stable_after),
                 (summary_5211_before, summary_5211_authoritative_after),
+                (summary_5307_before, summary_5307_stable_after),
+                (summary_5307_before, summary_5307_authoritative_after),
+                (summary_5307_old_authoritative_after, summary_5307_authoritative_after),
                 *legacy_summary_variants,
             ],
         ),
@@ -1119,6 +1247,7 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (preserve_command_current_before, preserve_command_current_after),
                 (preserve_command_5059_before, preserve_command_5059_after),
                 (preserve_command_5200_before, preserve_command_5200_after),
+                (preserve_command_5307_before, preserve_command_5307_after),
             ],
         ),
         (
@@ -1129,15 +1258,18 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (anonymous_5059_before, anonymous_5059_after),
                 (anonymous_5200_before, anonymous_5200_after),
                 (anonymous_5200_before, "v=Bt;"),
+                (anonymous_5307_before, anonymous_5307_after),
+                (anonymous_5307_after, "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];"),
+                ("n=Bt;c=[];", "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];"),
             ],
         ),
         (
             "task005-native-list-authoritative",
-            [(summary_5211_stable_after, summary_5211_authoritative_after)],
+            [(summary_5211_stable_after, summary_5211_authoritative_after), (summary_5307_stable_after, summary_5307_authoritative_after), (summary_5307_old_authoritative_after, summary_5307_authoritative_after)],
         ),
         (
             "task005-drop-anonymous-terminal-registered-rows",
-            [(anonymous_registered_row_before, anonymous_registered_row_after), (anonymous_registered_row_5200_before, anonymous_registered_row_5200_after), (anonymous_registered_row_5211_before, anonymous_registered_row_5211_after)],
+            [(anonymous_registered_row_before, anonymous_registered_row_after), (anonymous_registered_row_5200_before, anonymous_registered_row_5200_after), (anonymous_registered_row_5211_before, anonymous_registered_row_5211_after), ("n=Bt;", "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];")],
         ),
         ("task005-native-terminal-status-running", [(status_before, status_after), (status_current_before, status_current_after), (status_5200_before, status_5200_after)]),
         ("task005-native-terminal-restart-enabled", [(missing_pid_before, missing_pid_after), (missing_pid_5211_before, missing_pid_5211_after)]),
@@ -1155,11 +1287,12 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (stop_5200_before, stop_5200_native_first_after),
                 (stop_5211_before, stop_5211_after),
                 (stop_5211_before, stop_5211_native_first_after),
+                (stop_5307_before, stop_5307_after),
             ],
         ),
         (
             "task005-native-terminal-stop-prioritized",
-            [(stop_5059_after, stop_5059_native_first_after), (stop_5103_after, stop_5103_native_first_after), (stop_5200_after, stop_5200_native_first_after), (stop_5211_after, stop_5211_native_first_after)],
+            [(stop_5059_after, stop_5059_native_first_after), (stop_5103_after, stop_5103_native_first_after), (stop_5200_after, stop_5200_native_first_after), (stop_5211_after, stop_5211_native_first_after), (stop_5307_after, stop_5307_after)],
         ),
         (
             "task005-native-terminal-restart-action",
@@ -1175,22 +1308,23 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
                 (restart_5200_before, restart_5200_native_first_after),
                 (restart_5211_before, restart_5211_after),
                 (restart_5211_before, restart_5211_native_first_after),
+                (restart_5307_before, restart_5307_after),
             ],
         ),
         (
             "task005-native-terminal-restart-prioritized",
-            [(restart_5059_after, restart_5059_native_first_after), (restart_5103_after, restart_5103_native_first_after), (restart_5200_after, restart_5200_native_first_after), (restart_5211_after, restart_5211_native_first_after)],
+            [(restart_5059_after, restart_5059_native_first_after), (restart_5103_after, restart_5103_native_first_after), (restart_5200_after, restart_5200_native_first_after), (restart_5211_after, restart_5211_native_first_after), (restart_5307_after, restart_5307_after)],
         ),
         (
             "task005-summary-stop-single-native-terminal",
-            [(summary_stop_all_before, summary_stop_single_after), (summary_stop_all_5103_before, summary_stop_single_5103_after), (summary_stop_all_5211_before, summary_stop_single_5211_after)],
+            [(summary_stop_all_before, summary_stop_single_after), (summary_stop_all_5103_before, summary_stop_single_5103_after), (summary_stop_all_5211_before, summary_stop_single_5211_after), (summary_stop_all_5307_before, summary_stop_single_5307_after)],
         ),
         (
             "task005-summary-stop-single-label",
             [(summary_stop_label_before, summary_stop_label_after)],
         ),
         ("task005-native-terminal-stop-enabled", [(stop_disabled_before, stop_disabled_after), (stop_disabled_current_before, stop_disabled_current_after), (stop_disabled_5103_before, stop_disabled_5103_after)]),
-        ("task005-native-terminal-stop-tooltip", [(stop_tooltip_before, stop_tooltip_after), (stop_tooltip_current_before, stop_tooltip_current_after), (stop_tooltip_5059_before, stop_tooltip_5059_after), (stop_tooltip_5103_before, stop_tooltip_5103_after), (stop_tooltip_5200_before, stop_tooltip_5200_after), (stop_tooltip_5211_before, stop_tooltip_5211_after)]),
+        ("task005-native-terminal-stop-tooltip", [(stop_tooltip_before, stop_tooltip_after), (stop_tooltip_current_before, stop_tooltip_current_after), (stop_tooltip_5059_before, stop_tooltip_5059_after), (stop_tooltip_5103_before, stop_tooltip_5103_after), (stop_tooltip_5200_before, stop_tooltip_5200_after), (stop_tooltip_5211_before, stop_tooltip_5211_after), (stop_tooltip_5307_before, stop_tooltip_5307_after)]),
         ("task005-native-terminal-stop-tooltip-interactive", [(stop_interactive_before, stop_interactive_after), (stop_interactive_current_before, stop_interactive_current_after), (stop_interactive_5103_before, stop_interactive_5103_after)]),
     ]
     substeps = []
@@ -1375,6 +1509,24 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         "children:(0,T8.jsx)(z,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
         "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=f,t[4]=h),h}"
     )
+    function_5307_before = (
+        "function it(e){let t=(0,U.c)(5),{conversationId:n,terminalId:r}=e,i=p(c,n),a;"
+        "t[0]!==r||t[1]!==i?(a=st(i,r),t[0]=r,t[1]=i,t[2]=a):a=t[2];"
+        "let o=a,s=at(r),l=o?.aggregatedOutput??s?.buffer??``,u;"
+        "return t[3]===l?u=t[4]:(u=(0,W.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:l.length>0?(0,W.jsx)(Qe,{output:l}):(0,W.jsx)(`div`,{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,W.jsx)(te,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=l,t[4]=u),u}"
+    )
+    function_5307_after = (
+        "function it(e){let t=(0,U.c)(5),{conversationId:n,terminalId:r,command:i,output:a}=e,o=p(c,n),s;"
+        "t[0]!==r||t[1]!==o?(s=st(o,r),t[0]=r,t[1]=o,t[2]=s):s=t[2];"
+        "let l=s,u=at(r),d=l?.aggregatedOutput??u?.buffer??a??``,f=i??``,h=f.length>0?`${f}\\n${d}`:d,g;"
+        "return t[3]===h?g=t[4]:(g=(0,W.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:h.length>0?(0,W.jsx)(Qe,{output:h}):(0,W.jsx)(`div`,{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,W.jsx)(te,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=h,t[4]=g),g}"
+    )
     props_before = "props:{conversationId:n,terminalId:t.id},id:`background-terminal:${n}:${t.id}`"
     props_command_after = "props:{conversationId:n,terminalId:t.id,command:t.command},id:`background-terminal:${n}:${t.id}`"
     props_after = "props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``},id:`background-terminal:${n}:${t.id}`"
@@ -1436,6 +1588,7 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
             (function_5103_before, function_5103_after),
             (function_5200_before, function_5200_after),
             (function_5211_before, function_5211_after),
+            (function_5307_before, function_5307_after),
         ],
         step_name="output-tab-command-line-header",
     )
@@ -1518,6 +1671,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         f"Ba(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}})",
         f"Br(`{m.LIST_BG_ACTION}`,{{conversationId:o,cursor:null,limit:50}})",
         f"wn(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}})",
+        f"s(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
     ]
     checks = {
         "summaryPollsNativeBackgroundTerminalList": any(call in local_text for call in list_calls),
@@ -1527,15 +1681,20 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
             or "g=[...Bt,...g.filter" in local_text
             or "v=[...Bt,...v.filter" in local_text
             or "v=Bt;" in local_text
+            or "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];" in local_text
         ),
         "summaryMapsNativeBackgroundTerminalOutput": "output:String(e.output??``)" in local_text,
         "summaryPreservesLastKnownCommand": "new Map(t.map(e=>[e.id,e.command]))" in local_text,
         "summaryDropsAnonymousTerminalRows": (
             (
                 "v=Bt;" in local_text
+                or "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];" in local_text
                 or "filter(e=>String(e.command??``).trim().length>0)" in local_text
             )
-            and "filter(e=>String(e.terminal.command??``).trim().length>0)" in local_text
+            and (
+                "filter(e=>String(e.terminal.command??``).trim().length>0)" in local_text
+                or "c=[];" in local_text
+            )
         ),
         "summaryUsesCommandTitle": "e.terminal.command.length>0?e.terminal.command" in local_text,
         "outputMenuPresent": "codex.localConversation.backgroundTerminals.openOutput" in local_text and "Open output" in local_text,
@@ -1572,7 +1731,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         "outputTabPrependsCommandLine": (
             "aggregatedOutput??" in automations_text
             and "?.buffer??a??``" in automations_text
-            and "`${d}\\n${u}`" in automations_text
+            and ("`${d}\\n${u}`" in automations_text or "`${f}\\n${d}`" in automations_text)
         ),
         "outputTabJsSyntaxOk": automations_syntax_check.get("ok") is True,
     }
@@ -1587,7 +1746,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
             "outputCommandPropCount": automations_text.count("props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``}"),
             "listMethodCount": list_method_count,
             "terminateMethodCount": terminate_method_count,
-            "nativeAuthoritativeListCount": local_text.count("v=Bt;"),
+            "nativeAuthoritativeListCount": local_text.count("v=Bt;") + local_text.count("n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];"),
         },
         "syntaxCheck": syntax_check,
         "outputTabSyntaxCheck": automations_syntax_check,

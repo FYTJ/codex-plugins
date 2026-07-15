@@ -37,9 +37,9 @@ git apply --check ../../scripts/openai-codex-background-shell.patch
 git apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-当前兼容基线为 Codex App `26.707.62119 (5211)`，安装路径为 `/Applications/ChatGPT.app`，bundle id 仍为 `com.openai.codex`。该构建原装 bundled CLI 为 `codex-cli 0.144.2`；current wrapper 会显式识别 clean target、旧 `0.144.0-alpha.4` 补丁版本和当前 `0.144.2` 补丁版本，并最终安装与 App 协议版本一致的 patched `codex-cli 0.144.2`。current wrapper 同时保留旧 `/Applications/Codex.app` 路径和旧构建的兼容分支，并支持 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口。App 正在运行时可使用 `--allow-running` 原子写入补丁；新代码在用户下次完整退出并重新打开 Codex 后生效。
+当前兼容基线为 Codex App `26.707.72221 (5307)`，安装路径为 `/Applications/ChatGPT.app`，bundle id 仍为 `com.openai.codex`。该构建原装 bundled CLI 为 `codex-cli 0.144.2`；current wrapper 会显式识别 clean target、旧 `0.144.0-alpha.4` 补丁版本和当前 `0.144.2` 补丁版本，并最终安装与 App 协议版本一致的 patched `codex-cli 0.144.2`。current wrapper 同时保留旧 `/Applications/Codex.app` 路径和旧构建的兼容分支，并支持 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口。App 正在运行时可使用 `--allow-running` 原子写入补丁；新代码在用户下次完整退出并重新打开 Codex 后生效。
 
-build 5211 的摘要栏只以 native `thread/backgroundTerminals/list` 返回值作为后台任务事实来源，不再合并会话历史中残留的 `commandExecution status=inProgress` 行。这样，已经在前台正常完成的 `sed`、`rg`、`git status` 等普通命令不会被误显示为后台进程。
+build 5211 与 5307 的摘要栏只以 native `thread/backgroundTerminals/list` 返回值作为后台任务事实来源，不再合并会话历史中残留的 `commandExecution status=inProgress` 行。build 5307 新增的 `chat-processes` 注册行同样不会混入摘要栏。这样，已经在前台正常完成的 `sed`、`rg`、`git status` 等普通命令不会被误显示为后台进程。
 
 控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 
@@ -90,7 +90,7 @@ rustc
 
 ## 行为边界
 
-current wrapper patch 当前安装的官方 Codex App，build 5211 的默认目标为：
+current wrapper patch 当前安装的官方 Codex App，build 5307 的默认目标为：
 
 ```text
 /Applications/ChatGPT.app
