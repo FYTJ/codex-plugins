@@ -6,7 +6,7 @@
 
 - `scripts/codex_background_terminal_patch_app.py`：fail-closed patch/verify 控制器。它负责解析 clean source、验证官方 Codex App 目标、构建 patched native binary、修改 App ASAR、更新 Electron ASAR integrity、ad-hoc 签名、启动验证和完整场景验证。
 - `scripts/codex_background_terminal_patch_current.py`：当前 Codex App bundle 兼容 wrapper，用于适配更新后的 App 路径、ASAR 入口和 minified symbol。
-- `scripts/openai-codex-background-shell.patch`：基于 `openai/codex` 的 `rust-v0.144.2` tag 生成的 Rust/native patch。控制器构建 native binary 时要求该 patch 已应用到对应源码副本。
+- `scripts/openai-codex-background-shell.patch`：基于 `openai/codex` 的 `rust-v0.145.0-alpha.18` tag 生成的 Rust/native patch。控制器构建 native binary 时要求该 patch 已应用到对应源码副本。
 - `bin/codex-background-shell-patch-app`：可符号链接到 `~/.codex/bin` 的命令入口。
 - `bin/codex-background-shell-patch-current`：调用当前 Codex App 兼容 wrapper 的命令入口。
 - `.gitignore`：忽略运行时生成的 `background-terminal/` 报告目录、`external-sources/` 源码 checkout 和 Python 缓存。
@@ -30,18 +30,19 @@ chmod +x ~/.codex/plugins/background-shell/bin/codex-background-shell-patch-curr
 
 ```bash
 cd ~/.codex/plugins/background-shell
+rm -rf external-sources/openai-codex
 mkdir -p external-sources
-git clone --branch rust-v0.144.2 --single-branch https://github.com/openai/codex external-sources/openai-codex-rust-v0.144.2
-cd external-sources/openai-codex-rust-v0.144.2
+git clone --branch rust-v0.145.0-alpha.18 --single-branch https://github.com/openai/codex external-sources/openai-codex
+cd external-sources/openai-codex
 git apply --check ../../scripts/openai-codex-background-shell.patch
 git apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-当前兼容基线为 Codex App `26.707.72221 (5307)`，安装路径为 `/Applications/ChatGPT.app`，bundle id 仍为 `com.openai.codex`。该构建原装 bundled CLI 为 `codex-cli 0.144.2`；current wrapper 会显式识别 clean target、旧 `0.144.0-alpha.4` 补丁版本和当前 `0.144.2` 补丁版本，并最终安装与 App 协议版本一致的 patched `codex-cli 0.144.2`。current wrapper 同时保留旧 `/Applications/Codex.app` 路径和旧构建的兼容分支，并支持 Electron 的 `bootstrap.js` 与 `early-bootstrap.js` 入口。App 正在运行时可使用 `--allow-running` 原子写入补丁；新代码在用户下次完整退出并重新打开 Codex 后生效。
+当前兼容基线为 Codex App `26.715.31925 (5551)`，安装路径为 `/Applications/ChatGPT.app`，bundle id 仍为 `com.openai.codex`。该构建原装 bundled CLI 为 `codex-cli 0.145.0-alpha.18`；current wrapper 会显式校验 clean target，并最终安装与 App 协议版本一致的 patched `codex-cli 0.145.0-alpha.18`。App 正在运行时可使用 `--allow-running` 原子写入补丁，脚本不会停止或重启 App；正在运行的进程继续使用旧 inode，新代码在用户下次完整退出并重新打开 Codex 后生效。脚本会修改 App bundle 并执行 ad-hoc 重签名。
 
-build 5211 与 5307 的摘要栏只以 native `thread/backgroundTerminals/list` 返回值作为后台任务事实来源，不再合并会话历史中残留的 `commandExecution status=inProgress` 行。build 5307 新增的 `chat-processes` 注册行同样不会混入摘要栏。这样，已经在前台正常完成的 `sed`、`rg`、`git status` 等普通命令不会被误显示为后台进程。
+build 5551 的摘要栏只以 native `thread/backgroundTerminals/list` 返回值作为后台任务事实来源，不再合并 `Ag` 从会话历史推断出的残留 `commandExecution status=inProgress` 行，也不再混入 `registeredRows` 或 `actionStates`。这样，已经在前台正常完成的 `sed`、`rg`、`git status` 等普通命令不会被误显示为后台进程。
 
-build 5307 的摘要组件补丁不会改写官方 React 编译产物中的 `backgroundTerminals` / `registeredRows` 常量绑定，而是通过独立的 `BtRows` 局部变量映射 native 列表；host action 也通过模块级别别名调用，避免被组件的 `processSnapshotTimeMs` 参数同名遮蔽。轮询仅在摘要可见时运行，无数据变化时保留原 state 引用。该修复消除了重启后存在后台进程时触发的 `Assignment to constant variable.` 错误边界，并保持重复执行 patch 的幂等性。
+build 5551 的摘要组件使用独立的 React state 保存 native 列表，并将该列表直接传给 Electron 摘要组件；轮询仅在摘要可见且存在本地会话时运行，无数据变化时保留原 state 引用，接口短暂失败时保留最后一次成功结果。摘要行的 stop/restart 始终通过 native process id 操作单个后台任务。
 
 控制器默认使用 `PATH` 中的 `cargo` 和 `rustc`：
 
@@ -92,13 +93,13 @@ rustc
 
 ## 行为边界
 
-current wrapper patch 当前安装的官方 Codex App，build 5307 的默认目标为：
+current wrapper patch 当前安装的官方 Codex App，build 5551 的默认目标为：
 
 ```text
 /Applications/ChatGPT.app
 ```
 
-当 `/Applications/Codex.app` 仍存在时，current wrapper 保留该旧路径为默认目标；否则自动选择 `/Applications/ChatGPT.app`。使用 `--allow-running` 时脚本不会停止或重启 App，补丁写入后仍会执行 ASAR integrity、原生标记、JavaScript 语法和 codesign 静态验证。
+如需操作其他副本，可显式传入 `--app /path/to/ChatGPT.app`。使用 `--allow-running` 时脚本不会停止或重启 App，补丁写入后仍会执行 ASAR integrity、原生标记、JavaScript 语法和 codesign 静态验证。
 
 验证报告默认写入：
 

@@ -34,7 +34,7 @@ HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
 RESOURCE_ROOT = SCRIPT_DIR
 BACKGROUND_TERMINAL_ROOT = RESOURCE_ROOT / "background-terminal"
-SYSTEM_APP = Path("/Applications/Codex.app")
+SYSTEM_APP = Path("/Applications/ChatGPT.app")
 PATCH_TARGET_APP = SYSTEM_APP
 # Kept as a compatibility alias for existing report keys and helper names.
 DEFAULT_USER_APP = PATCH_TARGET_APP
@@ -42,10 +42,10 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-rust-v0.144.2"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-EXPECTED_SOURCE_HEAD = "a6645b6b8a656360fa16fb7e1c6721d0697d3d6a"
-EXPECTED_CODEX_VERSION = "codex-cli 0.144.2"
+EXPECTED_SOURCE_HEAD = "f84f9a6406cc55b210395f71b4c6aed236fc7ebb"
+EXPECTED_CODEX_VERSION = "codex-cli 0.145.0-alpha.18"
 RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
 RUSTC = RUST_TOOLCHAIN / "rustc"
 CARGO = RUST_TOOLCHAIN / "cargo"
@@ -114,14 +114,7 @@ FORBIDDEN_PERSISTENCE_SNIPPETS = (
     "You are a coding agent. Please keep going until the query is completely resolved",
 )
 
-PERSISTENCE_PROMPT_PATHS = (
-    "codex-rs/core/gpt_5_1_prompt.md",
-    "codex-rs/core/gpt_5_2_prompt.md",
-    "codex-rs/core/prompt_with_apply_patch_instructions.md",
-    "codex-rs/models-manager/models.json",
-    "codex-rs/models-manager/prompt.md",
-    "codex-rs/protocol/src/prompts/base_instructions/default.md",
-)
+PERSISTENCE_PROMPT_PATHS: tuple[str, ...] = ()
 
 SCENARIO_TESTS = {
     "explicit-background": (
@@ -684,7 +677,10 @@ def self_test() -> dict[str, Any]:
 
     check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
     check("source head is pinned to the supported app release", len(EXPECTED_SOURCE_HEAD) == 40)
-    check("Codex version is pinned to 0.144.2", EXPECTED_CODEX_VERSION == "codex-cli 0.144.2")
+    check(
+        "Codex version is pinned to 0.145.0-alpha.18",
+        EXPECTED_CODEX_VERSION == "codex-cli 0.145.0-alpha.18",
+    )
     check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
     check("busy wakeup scenario is registered", "busy-wakeup-30s" in SCENARIO_TESTS)
     check("idle wakeup scenario is registered", "idle-wakeup-2min" in SCENARIO_TESTS)
