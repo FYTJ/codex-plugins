@@ -171,10 +171,26 @@ index 3af419da1d..48982d54b2 100644
 +    }
 +}
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
-index f57224f2e9..17bd9ad8aa 100644
+index f57224f2e9..dd145003e5 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
-@@ -664,6 +664,15 @@ impl ThreadRequestProcessor {
+@@ -14,6 +14,15 @@ const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
+ const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
+     "thread/rollback is deprecated and will be removed soon";
+ 
++fn should_replace_loaded_idle_thread(
++    has_subscribers: bool,
++    is_idle: bool,
++    agent_running: bool,
++    has_live_background_terminals: bool,
++) -> bool {
++    !has_subscribers && is_idle && !agent_running && !has_live_background_terminals
++}
++
+ struct ThreadListFilters {
+     model_providers: Option<Vec<String>>,
+     source_kinds: Option<Vec<ThreadSourceKind>>,
+@@ -664,6 +673,15 @@ impl ThreadRequestProcessor {
              .map(|response| Some(response.into()))
      }
  
@@ -190,7 +206,7 @@ index f57224f2e9..17bd9ad8aa 100644
      pub(crate) async fn thread_rollback(
          &self,
          request_id: &ConnectionRequestId,
-@@ -1886,6 +1895,8 @@ impl ThreadRequestProcessor {
+@@ -1886,6 +1904,8 @@ impl ThreadRequestProcessor {
                      process_id: terminal.process_id,
                      command: terminal.command,
                      cwd,
@@ -199,7 +215,7 @@ index f57224f2e9..17bd9ad8aa 100644
                      os_pid: None,
                      cpu_percent: None,
                      rss_kb: None,
-@@ -1915,6 +1926,19 @@ impl ThreadRequestProcessor {
+@@ -1915,6 +1935,19 @@ impl ThreadRequestProcessor {
          Ok(ThreadBackgroundTerminalsTerminateResponse { terminated })
      }
  
@@ -219,8 +235,26 @@ index f57224f2e9..17bd9ad8aa 100644
      async fn thread_shell_command_inner(
          &self,
          request_id: &ConnectionRequestId,
+@@ -3300,8 +3333,15 @@ impl ThreadRequestProcessor {
+                     .await;
+                 let is_running =
+                     matches!(existing_thread.agent_status().await, AgentStatus::Running);
+-
+-                if !has_subscribers && matches!(loaded_status, ThreadStatus::Idle) && !is_running {
++                let has_live_background_terminals =
++                    !existing_thread.list_background_terminals().await.is_empty();
++
++                if should_replace_loaded_idle_thread(
++                    has_subscribers,
++                    matches!(loaded_status, ThreadStatus::Idle),
++                    is_running,
++                    has_live_background_terminals,
++                ) {
+                     // A loaded idle thread is only a cache entry. Shut it down
+                     // before removing it so cold resume cannot duplicate a
+                     // thread that timed out during shutdown.
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
-index 38a94ab812..231a4eceac 100644
+index 38a94ab812..a147f7ce57 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 +++ b/codex-rs/app-server/src/request_processors/thread_processor_tests.rs
 @@ -50,6 +50,8 @@ mod background_terminal_pagination_tests {
@@ -232,6 +266,29 @@ index 38a94ab812..231a4eceac 100644
              os_pid: None,
              cpu_percent: None,
              rss_kb: None,
+@@ -791,6 +793,22 @@ mod thread_processor_behavior_tests {
+         );
+     }
+ 
++    #[test]
++    fn live_background_terminal_prevents_resume_from_replacing_loaded_idle_thread() {
++        assert!(!should_replace_loaded_idle_thread(
++            /*has_subscribers*/ false, /*is_idle*/ true, /*agent_running*/ false,
++            /*has_live_background_terminals*/ true,
++        ));
++    }
++
++    #[test]
++    fn fully_idle_thread_without_background_terminal_remains_replaceable() {
++        assert!(should_replace_loaded_idle_thread(
++            /*has_subscribers*/ false, /*is_idle*/ true, /*agent_running*/ false,
++            /*has_live_background_terminals*/ false,
++        ));
++    }
++
+     fn test_thread_metadata(
+         model: Option<&str>,
+         reasoning_effort: Option<ReasoningEffort>,
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
 index 2b22f37c1c..23f899f63a 100644
 --- a/codex-rs/core/src/codex_thread.rs
