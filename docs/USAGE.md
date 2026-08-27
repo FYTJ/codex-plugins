@@ -1,6 +1,6 @@
 # 功能用法
 
-本文按功能说明当前仓库中每个扩展的安装、配置、常用命令和排障方式。默认 Codex 配置目录是 `~/.codex`，默认 Codex App 路径是 `/Applications/Codex.app`。
+本文按功能说明当前仓库中每个扩展的安装、配置、常用命令和排障方式。默认 Codex 配置目录是 `~/.codex`；App 路径以各功能说明为准，rewind 示例使用 `/Applications/Codex.app`，当前 background shell hook 使用 `/Applications/ChatGPT.app`。
 
 ## 1. 命令审批 Hook
 
@@ -262,7 +262,7 @@ Codex App 不在默认位置时：
 
 位置：`background-shell/`
 
-这个功能为 Codex App 注入 background shell 支持，并配套修改 `openai/codex` Rust/native 侧逻辑。它用于让长时间 shell 进程进入后台、在摘要栏显示后台任务，并在后台任务完成后通过 Codex App 内置接口唤醒会话。
+这个功能为 Codex App 注入 background shell native hook。当前发布版适配 Codex App `26.814.41407 (6720)`、`codex-cli 0.148.0-alpha.15` 和 `/Applications/ChatGPT.app`，复用 App 自带的后台终端 UI，不修改 ASAR 内容。
 
 ### 安装
 
@@ -271,7 +271,9 @@ mkdir -p "$HOME/.codex/bin" "$HOME/.codex/plugins"
 rm -rf "$HOME/.codex/plugins/background-shell"
 cp -R background-shell "$HOME/.codex/plugins/background-shell"
 ln -sf "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app" "$HOME/.codex/bin/codex-background-shell-patch-app"
+ln -sf "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-current" "$HOME/.codex/bin/codex-background-shell-patch-current"
 chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-app"
+chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch-current"
 ```
 
 ### 准备 native source
@@ -281,48 +283,53 @@ chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch
 ```bash
 cd "$HOME/.codex/plugins/background-shell"
 mkdir -p external-sources
-git clone https://github.com/openai/codex external-sources/openai-codex
-cd external-sources/openai-codex
-git apply ../../scripts/openai-codex-background-shell.patch
+git clone https://github.com/openai/codex external-sources/openai-codex-current
+git -C external-sources/openai-codex-current checkout a9ed4f154a4fad64acf538d6418d3ed012aeab86
+git -C external-sources/openai-codex-current apply --check ../../scripts/openai-codex-background-shell.patch
+git -C external-sources/openai-codex-current apply ../../scripts/openai-codex-background-shell.patch
 ```
 
-默认使用 `PATH` 中的 `cargo` 和 `rustc`。如果需要固定工具链目录，设置：
+控制器固定使用 Rust `1.95.0-aarch64-apple-darwin` 工具链：
 
-```bash
-export CODEX_BACKGROUND_SHELL_RUST_TOOLCHAIN=PATH_TO_RUST_TOOLCHAIN_BIN
+```text
+~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/cargo
+~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/rustc
 ```
 
-也可以分别设置 `CARGO` 和 `RUSTC`。
+源码必须保持在上述固定提交，且工作区差异必须与随附 patch 完全一致。
 
 ### 常用命令
 
 自测：
 
 ```bash
-~/.codex/bin/codex-background-shell-patch-app --self-test --json
+~/.codex/bin/codex-background-shell-patch-current --self-test --json
 ```
 
 检查官方 Codex App 目标状态：
 
 ```bash
-~/.codex/bin/codex-background-shell-patch-app --status --json
+~/.codex/bin/codex-background-shell-patch-current --status --json
 ```
 
 应用 patch：
 
 ```bash
-~/.codex/bin/codex-background-shell-patch-app --apply-patch --yes --json --write-report
+~/.codex/bin/codex-background-shell-patch-current
 ```
 
-运行完整验证：
+等价的显式应用命令：
 
 ```bash
-~/.codex/bin/codex-background-shell-patch-app --full-verify --yes --json --write-report
+~/.codex/bin/codex-background-shell-patch-current --apply-patch --yes --allow-running --json --write-report
 ```
 
 ### 行为边界
 
-- 默认 patch 目标是 `/Applications/Codex.app`。
+- 默认 patch 目标是 `/Applications/ChatGPT.app`；可用 `--app /path/to/ChatGPT.app` 覆盖。
+- current wrapper 只原子替换 native binary，验证 ASAR 哈希保持不变，并重新执行 ad-hoc codesign。
+- 脚本不会停止或重启 Codex App；正在运行的进程继续使用旧 inode，用户手动完整重启后新 hook 生效。
+- 后台任务完成通知会携带退出码与输出摘要；成功和非零退出链路均已在 build 6720 上端到端验证。
 - 验证报告、截图、备份和上游源码 checkout 都写在 `background-shell/` 内的忽略目录中，不进入 Git。
 - 发布仓库不包含 Codex App bundle、DMG、profile、会话、认证或本机配置。
 

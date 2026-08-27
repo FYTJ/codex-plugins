@@ -12,12 +12,16 @@ import codex_background_terminal_patch_app as m
 
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
-SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.145.0-alpha.18"}
+ORIG_STATUS_REPORT = m.status_report
+SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.148.0-alpha.15"}
 SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
     "codex-cli 0.144.0-alpha.4",
     "codex-cli 0.144.2",
     "codex-cli 0.145.0-alpha.18",
+    "codex-cli 0.146.0-alpha.3",
+    "codex-cli 0.146.0-alpha.3.1",
 }
+PENDING_ASAR_CONTENT: dict[tuple[str, str], bytes] = {}
 
 
 def find_text_entry(
@@ -67,6 +71,10 @@ def find_text_entry(
 
 
 def action_fn(text: str) -> str:
+    if "Yc(`clean-background-terminals`" in text or "Yc(`list-background-terminals`" in text:
+        return "Yc"
+    if "Rf(`interrupt-conversation`" in text or "Rf(`list-background-terminals`" in text:
+        return "Rf"
     if "Re(`clean-background-terminals`" in text or "Re(`list-background-terminals`" in text:
         return "Re"
     if "s(`clean-background-terminals`" in text or "s(`list-background-terminals`" in text:
@@ -162,6 +170,11 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
     command_before_5551 = (
         '"interrupt-conversation":r9(async(e,{conversationId:t,initiatedBy:n},r)=>'
         "{let i=await e.interruptConversation(t);"
+        "n===`user`&&i!=null&&r.markTurnInterruptedByThisClient(t,i)})"
+    )
+    command_before_5813 = (
+        '"interrupt-conversation":K9(async(e,{conversationId:t,initiatedBy:n},r)=>'
+        "{let i=await e.interruptConversation(t,n===`user`?`user-stop`:`system`);"
         "n===`user`&&i!=null&&r.markTurnInterruptedByThisClient(t,i)})"
     )
 
@@ -287,6 +300,34 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[pe]);"
         "let{serviceTierSettings:Ne}=$l(pe)"
     )
+    keydown_before_5813 = (
+        "OX(`composer.togglePlanMode`,()=>{Ujs({hasPlanMode:ce,hasDefaultMode:le,"
+        "isPlanMode:re.mode===`plan`,setSelectedMode:se})},{enabled:!oe&&ce&&O==null});"
+        "let{serviceTierSettings:ue}=RN(V)"
+    )
+    keydown_after_5813 = (
+        "OX(`composer.togglePlanMode`,()=>{Ujs({hasPlanMode:ce,hasDefaultMode:le,"
+        "isPlanMode:re.mode===`plan`,setSelectedMode:se})},{enabled:!oe&&ce&&O==null});"
+        "(0,Z0s.useEffect)(()=>{let e=e=>{e.type===`keydown`&&e.key.toLowerCase()===`b`&&"
+        "e.ctrlKey===!0&&e.metaKey!==!0&&e.altKey!==!0&&e.shiftKey!==!0&&V!=null&&"
+        f"(e.preventDefault(),e.stopPropagation(),Rf(`{m.CTRL_B_ACTION}`,{{conversationId:V}}).catch(e=>{{}}))}};"
+        "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[V]);"
+        "let{serviceTierSettings:ue}=RN(V)"
+    )
+    keydown_before_5828 = (
+        "kX(`composer.togglePlanMode`,()=>{Ujs({hasPlanMode:ce,hasDefaultMode:le,"
+        "isPlanMode:re.mode===`plan`,setSelectedMode:se})},{enabled:!oe&&ce&&O==null});"
+        "let{serviceTierSettings:ue}=PN(V)"
+    )
+    keydown_after_5828 = (
+        "kX(`composer.togglePlanMode`,()=>{Ujs({hasPlanMode:ce,hasDefaultMode:le,"
+        "isPlanMode:re.mode===`plan`,setSelectedMode:se})},{enabled:!oe&&ce&&O==null});"
+        "(0,Z0s.useEffect)(()=>{let e=e=>{e.type===`keydown`&&e.key.toLowerCase()===`b`&&"
+        "e.ctrlKey===!0&&e.metaKey!==!0&&e.altKey!==!0&&e.shiftKey!==!0&&V!=null&&"
+        f"(e.preventDefault(),e.stopPropagation(),Bf(`{m.CTRL_B_ACTION}`,{{conversationId:V}}).catch(e=>{{}}))}};"
+        "return window.addEventListener(`keydown`,e,!0),()=>window.removeEventListener(`keydown`,e,!0)},[V]);"
+        "let{serviceTierSettings:ue}=PN(V)"
+    )
     keydown_rel = find_text_entry(
         asar_path,
         header,
@@ -302,6 +343,8 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
             keydown_before_5211,
             keydown_before_5307,
             keydown_before_5551,
+            keydown_before_5813,
+            keydown_before_5828,
             keydown_after_old,
             keydown_after_new,
             keydown_after_current,
@@ -311,22 +354,17 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
             keydown_after_5211,
             keydown_after_5307,
             keydown_after_5551,
+            keydown_after_5813,
+            keydown_after_5828,
         ),
         path_prefix="webview/assets/",
     )
 
-    manager_step = m.replace_asar_text_variants(
-        asar_path,
-        header,
-        data_offset,
-        manager_rel,
-        [
-            (manager_clean_before, manager_after),
-            (manager_ctrl_b_after, manager_after),
-            (manager_ctrl_b_terminate_after, manager_after),
-        ],
-        step_name="ctrl-b-conversation-manager-method",
-    )
+    manager_variants = [
+        (manager_clean_before, manager_after),
+        (manager_ctrl_b_after, manager_after),
+        (manager_ctrl_b_terminate_after, manager_after),
+    ]
     command_variants = [
         (command_before_old, command_after(command_before_old, "Q7")),
         (command_ctrl_b_after(command_before_old, "Q7"), command_after(command_before_old, "Q7")),
@@ -349,6 +387,9 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         (command_before_5551, command_after(command_before_5551, "r9")),
         (command_ctrl_b_after(command_before_5551, "r9"), command_after(command_before_5551, "r9")),
         (command_ctrl_b_terminate_after(command_before_5551, "r9"), command_after(command_before_5551, "r9")),
+        (command_before_5813, command_after(command_before_5813, "K9")),
+        (command_ctrl_b_after(command_before_5813, "K9"), command_after(command_before_5813, "K9")),
+        (command_ctrl_b_terminate_after(command_before_5813, "K9"), command_after(command_before_5813, "K9")),
     ]
     keydown_variants = [
         (keydown_before_old, keydown_after_old),
@@ -360,7 +401,58 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
         (keydown_before_5211, keydown_after_5211),
         (keydown_before_5307, keydown_after_5307),
         (keydown_before_5551, keydown_after_5551),
+        (keydown_before_5813, keydown_after_5813),
+        (keydown_before_5828, keydown_after_5828),
     ]
+
+    if manager_rel == command_rel == keydown_rel:
+        original = m.read_asar_file(asar_path, header, data_offset, command_rel)
+        text = original.decode("utf-8")
+        text, manager_step = m.replace_text_variants_in_text(
+            text,
+            manager_rel,
+            manager_variants,
+            step_name="ctrl-b-conversation-manager-method",
+        )
+        text, command_step = m.replace_text_variants_in_text(
+            text,
+            command_rel,
+            command_variants,
+            step_name="ctrl-b-host-command",
+        )
+        text, keydown_step = m.replace_text_variants_in_text(
+            text,
+            keydown_rel,
+            keydown_variants,
+            step_name="ctrl-b-global-keydown",
+        )
+        updated = text.encode("utf-8")
+        PENDING_ASAR_CONTENT[(str(asar_path), command_rel)] = updated
+        combined_step = {
+            "name": "ctrl-b-manager-host-command-and-global-keydown",
+            "target": command_rel,
+            "beforeSha256": hashlib.sha256(original).hexdigest(),
+            "afterSha256": hashlib.sha256(updated).hexdigest(),
+            "beforeSize": len(original),
+            "afterSize": len(updated),
+            "alreadyApplied": (
+                manager_step["alreadyApplied"]
+                and command_step["alreadyApplied"]
+                and keydown_step["alreadyApplied"]
+            ),
+            "substeps": [manager_step, command_step, keydown_step],
+            "content": updated,
+        }
+        return [combined_step]
+
+    manager_step = m.replace_asar_text_variants(
+        asar_path,
+        header,
+        data_offset,
+        manager_rel,
+        manager_variants,
+        step_name="ctrl-b-conversation-manager-method",
+    )
 
     if command_rel == keydown_rel:
         original = m.read_asar_file(asar_path, header, data_offset, command_rel)
@@ -378,6 +470,7 @@ def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: 
             step_name="ctrl-b-global-keydown",
         )
         updated = text.encode("utf-8")
+        PENDING_ASAR_CONTENT[(str(asar_path), command_rel)] = updated
         combined_step = {
             "name": "ctrl-b-host-command-and-global-keydown",
             "target": command_rel,
@@ -556,6 +649,187 @@ def apply_task005_ui_patch_5551(
     }]
 
 
+def apply_task005_ui_patch_5813(
+    asar_path: Path,
+    header: dict[str, Any],
+    data_offset: int,
+    local_thread_rel: str,
+) -> list[dict[str, Any]]:
+    original = m.read_asar_file(asar_path, header, data_offset, local_thread_rel)
+    text = original.decode("utf-8")
+
+    summary_before = "let g=h,_;t[2]!==s||t[3]!==a||t[4]!==c||t[5]!==o||t[6]!==l?"
+    summary_after = (
+        "let g=h,[Bt,BtSet]=(0,Dy.useState)([]);"
+        "(0,Dy.useEffect)(()=>{if(a==null||!n){BtSet(e=>e.length===0?e:[]);return}"
+        "let e=!1,t=async()=>{try{let r=await Yc(`list-background-terminals`,"
+        "{conversationId:a,cursor:null,limit:50});if(e)return;"
+        "let i=Array.isArray(r?.data)?r.data:[];BtSet(t=>{let r=new Map(t.map(e=>[e.id,e.command])),"
+        "n=i.map(e=>{let t=String(e.itemId??e.id??e.processId??`${a}:${e.command??``}`),"
+        "n=String(e.command??``).trim()||r.get(t)||``;return{id:t,command:n,cwd:e.cwd??null,"
+        "processId:e.processId??null,source:String(e.source??``),status:`running`,"
+        "output:String(e.output??``),startedAtMs:e.startedAtMs??null,turnId:e.turnId??null,"
+        "workspaceRoot:e.workspaceRoot??null}}).filter(e=>e.command.length>0);"
+        "return t.length===n.length&&t.every((e,t)=>{let r=n[t];return r!=null&&"
+        "e.id===r.id&&e.command===r.command&&e.cwd===r.cwd&&e.processId===r.processId&&"
+        "e.source===r.source&&e.status===r.status&&e.output===r.output&&"
+        "e.startedAtMs===r.startedAtMs&&e.turnId===r.turnId&&e.workspaceRoot===r.workspaceRoot})?t:n})}"
+        "catch{e||BtSet(e=>e)}};t();let r=setInterval(t,1e3);"
+        "return()=>{e=!0,clearInterval(r)}},[a,n]);g=Bt;let _;"
+        "t[2]!==s||t[3]!==a||t[4]!==c||t[5]!==o||t[6]!==l?"
+    )
+    stop_before = (
+        "A=(e,t)=>{let r=e.metrics?.pid;r!=null&&"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:r}).then(r=>{let{killed:i}=r;"
+        "if(!i)throw Error(`Process is no longer running`);"
+        "if(m.current){sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "n(p,e.process.id)},()=>{d(),n(p,e.process.id)}))}"
+    )
+    stop_after = (
+        "A=(e,t)=>{let r=e.metrics?.pid;"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null?"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "Yc(`terminate-background-terminal`,{conversationId:a,processId:e.terminal.processId}).then(r=>{"
+        "if(r?.terminated===!1||r?.data?.terminated===!1){d();n(p,e.process.id);return}"
+        "if(m.current){sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "n(p,e.process.id)},()=>{d(),n(p,e.process.id)})):r!=null&&"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:r}).then(r=>{let{killed:i}=r;"
+        "if(!i)throw Error(`Process is no longer running`);"
+        "if(m.current){sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopped`});return}"
+        "n(p,e.process.id)},()=>{d(),n(p,e.process.id)}))}"
+    )
+    restart_before = (
+        "P=(e,t)=>{let r=e.metrics?.pid;r!=null&&"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:r}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "N(e,t)},()=>{u(),n(p,e.process.id)}))}"
+    )
+    restart_after = (
+        "P=(e,t)=>{let r=e.metrics?.pid;"
+        "e.process.source===`background-terminal`&&e.terminal.processId!=null?"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "Yc(`terminate-background-terminal`,{conversationId:a,processId:e.terminal.processId}).then(r=>{"
+        "if(r?.terminated===!1||r?.data?.terminated===!1){u();n(p,e.process.id);return}"
+        "N(e,t)},()=>{u(),n(p,e.process.id)})):r!=null&&"
+        "(sf(p,e.process.id,{row:e,rowIndex:t,sortRow:e,status:`stopping`}),"
+        "g.mutateAsync({pid:r}).then(n=>{let{killed:r}=n;"
+        "if(!r)throw Error(`Process is no longer running`);"
+        "N(e,t)},()=>{u(),n(p,e.process.id)}))}"
+    )
+
+    replacements = [
+        ("task005-5813-native-poll", [(summary_before, summary_after)]),
+        ("task005-5813-native-count", [("let F=N,I;", "let F=Bt.length,I;")]),
+        (
+            "task005-5813-skip-registered-rows",
+            [("processSnapshotTimeMs:M,registeredRows:P,onOpen:", "processSnapshotTimeMs:M,registeredRows:[],onOpen:")],
+        ),
+        ("task005-5813-authoritative-rows", [("let T=w,E,D;", "let T=x,E,D;")]),
+        (
+            "task005-5813-native-status",
+            [
+                (
+                    "function Jy(e,t,n){return t==null?!n||e.metrics!=null?`running`:`not-found`:t.status}",
+                    "function Jy(e,t,n){return t==null?!n||e.metrics!=null||"
+                    "e.process.source===`background-terminal`?`running`:`not-found`:t.status}",
+                )
+            ],
+        ),
+        ("task005-5813-native-stop", [(stop_before, stop_after)]),
+        ("task005-5813-native-restart", [(restart_before, restart_after)]),
+        (
+            "task005-5813-native-restart-enabled",
+            [
+                (
+                    "m=!f&&!p&&o.metrics?.pid==null,h=",
+                    "m=!f&&!p&&o.metrics?.pid==null&&o.process.source!==`background-terminal`,h=",
+                )
+            ],
+        ),
+        (
+            "task005-5813-native-stop-enabled",
+            [
+                (
+                    "let D=o.metrics?.pid==null||u||d||f,O;",
+                    "let D=o.metrics?.pid==null&&o.process.source!==`background-terminal`||u||d||f,O;",
+                )
+            ],
+        ),
+        (
+            "task005-5813-native-stop-tooltip",
+            [
+                (
+                    "O=o.metrics?.pid==null?(0,tb.jsx)(H,{...rb.stopMissingProcessTooltip}):void 0",
+                    "O=o.metrics?.pid==null&&o.process.source!==`background-terminal`"
+                    "?(0,tb.jsx)(H,{...rb.stopMissingProcessTooltip}):void 0",
+                )
+            ],
+        ),
+        (
+            "task005-5813-native-stop-tooltip-interactive",
+            [
+                (
+                    "let k=o.metrics?.pid==null,A;",
+                    "let k=o.metrics?.pid==null&&o.process.source!==`background-terminal`,A;",
+                )
+            ],
+        ),
+        (
+            "task005-5813-summary-stop-single",
+            [
+                (
+                    "m=e=>{i==null||u!=null||(d(e.id),Yc(`clean-background-terminals`,"
+                    "{conversationId:i}).catch(c).finally(()=>d(null)))}",
+                    "m=e=>{i==null||u!=null||e.processId==null||(d(e.id),"
+                    "Yc(`terminate-background-terminal`,{conversationId:i,processId:e.processId})"
+                    ".then(e=>{if(e?.terminated===!1||e?.data?.terminated===!1)"
+                    "throw Error(`Process is no longer running`)}).catch(c).finally(()=>d(null)))}",
+                )
+            ],
+        ),
+        (
+            "task005-5813-summary-stop-label",
+            [("defaultMessage:`Stop all background terminals`", "defaultMessage:`Stop background terminal`")],
+        ),
+    ]
+
+    substeps = []
+    for step_name, variants in replacements:
+        text, substep = m.replace_text_variants_in_text(
+            text,
+            local_thread_rel,
+            variants,
+            step_name=step_name,
+        )
+        substeps.append(substep)
+
+    updated = text.encode("utf-8")
+    syntax_check = m.javascript_syntax_check(local_thread_rel, text)
+    if syntax_check.get("ok") is not True:
+        raise m.ControllerError(
+            "javascript-syntax-check-failed",
+            "Patched build 5813 local conversation bundle failed JavaScript syntax validation.",
+            details=syntax_check,
+        )
+    return [{
+        "name": "task005-native-terminal-controls-5813",
+        "target": local_thread_rel,
+        "beforeSha256": hashlib.sha256(original).hexdigest(),
+        "afterSha256": hashlib.sha256(updated).hexdigest(),
+        "beforeSize": len(original),
+        "afterSize": len(updated),
+        "alreadyApplied": all(step["alreadyApplied"] for step in substeps),
+        "substeps": substeps,
+        "syntaxCheck": syntax_check,
+        "action": m.TERMINATE_BG_ACTION,
+        "method": m.TERMINATE_BG_NATIVE_METHOD,
+        "content": updated,
+    }]
+
+
 def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> list[dict[str, Any]]:
     local_thread_rel = find_text_entry(
         asar_path,
@@ -567,6 +841,8 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     )
     original = m.read_asar_file(asar_path, header, data_offset, local_thread_rel)
     text = original.decode("utf-8")
+    if "function ab(e)" in text and "function ob(e)" in text and "function cb(e)" in text:
+        return apply_task005_ui_patch_5813(asar_path, header, data_offset, local_thread_rel)
     if "function Ag(e)" in text and "function Ng(e)" in text and "function hg(e)" in text:
         return apply_task005_ui_patch_5551(asar_path, header, data_offset, local_thread_rel)
     call = action_fn(text)
@@ -869,6 +1145,10 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
     ).replace(
         anonymous_5059_before,
         anonymous_5059_after,
+    )
+    summary_5059_authoritative_after = summary_5059_stable_after.replace(
+        anonymous_5059_after,
+        "g=Bt.filter(e=>String(e.command??``).trim().length>0);",
     )
     summary_5211_stable_after = summary_5211_after.replace(
         preserve_command_5059_before,
@@ -1549,7 +1829,12 @@ def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset:
         ),
         (
             "task005-native-list-authoritative",
-            [(summary_5211_stable_after, summary_5211_authoritative_after), (summary_5307_stable_after, summary_5307_authoritative_after), (summary_5307_old_authoritative_after, summary_5307_authoritative_after)],
+            [
+                (summary_5059_stable_after, summary_5059_authoritative_after),
+                (summary_5211_stable_after, summary_5211_authoritative_after),
+                (summary_5307_stable_after, summary_5307_authoritative_after),
+                (summary_5307_old_authoritative_after, summary_5307_authoritative_after),
+            ],
         ),
         *(
             [
@@ -1684,7 +1969,10 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         include_all=("backgroundTerminalTab.noOutput", "background-terminal:${n}:${t.id}"),
         path_prefix="webview/assets/",
     )
-    original = m.read_asar_file(asar_path, header, data_offset, rel_path)
+    original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), rel_path),
+        m.read_asar_file(asar_path, header, data_offset, rel_path),
+    )
     text = original.decode("utf-8")
 
     function_old_before = (
@@ -1851,6 +2139,50 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         "children:(0,q.jsx)(A,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
         "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),t[3]=h,t[4]=g),g}"
     )
+    function_5813_before = (
+        "function pvu(e){let t=(0,_vu.c)(5),{conversationId:n,terminalId:r}=e,i=Bo(zD,n),a;"
+        "t[0]!==r||t[1]!==i?(a=gvu(i,r),t[0]=r,t[1]=i,t[2]=a):a=t[2];"
+        "let o=a,s=mvu(r),c=o?.aggregatedOutput??s?.buffer??``,l;"
+        "return t[3]===c?l=t[4]:(l=(0,yvu.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:c.length>0?(0,yvu.jsx)(ovu,{output:c}):(0,yvu.jsx)(`div`,"
+        "{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,yvu.jsx)(Z,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=c,t[4]=l),l}"
+    )
+    function_5813_after = (
+        "function pvu(e){let t=(0,_vu.c)(5),{conversationId:n,terminalId:r,command:i,output:a}=e,o=Bo(zD,n),s;"
+        "t[0]!==r||t[1]!==o?(s=gvu(o,r),t[0]=r,t[1]=o,t[2]=s):s=t[2];"
+        "let c=s,l=mvu(r),u=c?.aggregatedOutput??l?.buffer??a??``,d=i??``,f=d.length>0?`${d}\\n${u}`:u,h;"
+        "return t[3]===f?h=t[4]:(h=(0,yvu.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:f.length>0?(0,yvu.jsx)(ovu,{output:f}):(0,yvu.jsx)(`div`,"
+        "{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,yvu.jsx)(Z,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=f,t[4]=h),h}"
+    )
+    function_5828_before = (
+        "function mvu(e){let t=(0,vvu.c)(5),{conversationId:n,terminalId:r}=e,i=Fo(bD,n),a;"
+        "t[0]!==r||t[1]!==i?(a=_vu(i,r),t[0]=r,t[1]=i,t[2]=a):a=t[2];"
+        "let o=a,s=hvu(r),c=o?.aggregatedOutput??s?.buffer??``,l;"
+        "return t[3]===c?l=t[4]:(l=(0,bvu.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:c.length>0?(0,bvu.jsx)(svu,{output:c}):(0,bvu.jsx)(`div`,"
+        "{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,bvu.jsx)(Z,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=c,t[4]=l),l}"
+    )
+    function_5828_after = (
+        "function mvu(e){let t=(0,vvu.c)(5),{conversationId:n,terminalId:r,command:i,output:a}=e,o=Fo(bD,n),s;"
+        "t[0]!==r||t[1]!==o?(s=_vu(o,r),t[0]=r,t[1]=o,t[2]=s):s=t[2];"
+        "let c=s,l=hvu(r),u=c?.aggregatedOutput??l?.buffer??a??``,d=i??``,f=d.length>0?`${d}\\n${u}`:u,h;"
+        "return t[3]===f?h=t[4]:(h=(0,bvu.jsx)(`div`,{className:`h-full min-h-0 bg-token-main-surface-primary`,"
+        "children:f.length>0?(0,bvu.jsx)(svu,{output:f}):(0,bvu.jsx)(`div`,"
+        "{className:`font-vscode-editor text-size-code-sm p-4 text-token-description-foreground`,"
+        "children:(0,bvu.jsx)(Z,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=f,t[4]=h),h}"
+    )
     props_before = "props:{conversationId:n,terminalId:t.id},id:`background-terminal:${n}:${t.id}`"
     props_command_after = "props:{conversationId:n,terminalId:t.id,command:t.command},id:`background-terminal:${n}:${t.id}`"
     props_after = "props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``},id:`background-terminal:${n}:${t.id}`"
@@ -1914,6 +2246,8 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
             (function_5211_before, function_5211_after),
             (function_5307_before, function_5307_after),
             (function_5551_before, function_5551_after),
+            (function_5813_before, function_5813_after),
+            (function_5828_before, function_5828_after),
         ],
         step_name="output-tab-command-line-header",
     )
@@ -1943,6 +2277,7 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         })
 
     updated = text.encode("utf-8")
+    PENDING_ASAR_CONTENT[(str(asar_path), rel_path)] = updated
     syntax_check = m.javascript_syntax_check(rel_path, text)
     if syntax_check.get("ok") is not True:
         raise m.ControllerError("javascript-syntax-check-failed", "Patched output tab bundle failed JavaScript syntax validation.", details=syntax_check)
@@ -2000,6 +2335,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
         f"__backgroundTerminalHostAction(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
         f"__codexBackgroundTerminalAction(`{m.LIST_BG_ACTION}`,{{conversationId:i,cursor:null,limit:50}})",
         f"Re(`{m.LIST_BG_ACTION}`,{{conversationId:c,cursor:null,limit:50}})",
+        f"Yc(`{m.LIST_BG_ACTION}`,{{conversationId:a,cursor:null,limit:50}})",
     ]
     uses_5307_local_binding = (
         "const __backgroundTerminalHostAction=s;function Th(e){" in local_text
@@ -2018,6 +2354,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
             or "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];" in local_text
             or "let BtRows=Bt;" in local_text
             or "let[Bt,BtSet]=(0,Tg.useState)([]);" in local_text
+            or "g=Bt;let _;" in local_text
         ),
         "summaryMapsNativeBackgroundTerminalOutput": "output:String(e.output??``)" in local_text,
         "summaryPreservesLastKnownCommand": "new Map(t.map(e=>[e.id,e.command]))" in local_text,
@@ -2027,6 +2364,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
                 or "n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];" in local_text
                 or "let BtRows=Bt;" in local_text
                 or "let[Bt,BtSet]=(0,Tg.useState)([]);" in local_text
+                or "g=Bt;let _;" in local_text
                 or "filter(e=>String(e.command??``).trim().length>0)" in local_text
             )
             and (
@@ -2034,6 +2372,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
                 or "c=[];" in local_text
                 or "let y=v,b=y;" in local_text
                 or "let O=x,k,A;" in local_text
+                or "processSnapshotTimeMs:M,registeredRows:[],onOpen:" in local_text
             )
         ),
         "summaryAvoidsCompilerBindingMutation": (
@@ -2118,6 +2457,7 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
                 local_text.count("v=Bt;")
                 + local_text.count("n=Bt.filter(e=>String(e.command??``).trim().length>0);c=[];")
                 + local_text.count("let O=x,k,A;")
+                + local_text.count("g=Bt;let _;")
             ),
         },
         "syntaxCheck": syntax_check,
@@ -2194,6 +2534,175 @@ def analyze_app_compatible(app: Path, *, role: str) -> dict[str, Any]:
     return result
 
 
+def scan_builtin_background_terminal_ui(app: Path) -> dict[str, Any]:
+    paths = m.app_paths(app)
+    header, _header_size, data_offset = m.read_asar_header(paths["asar"])
+    try:
+        manager_rel = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="builtin-background-terminal-manager",
+            include_all=("thread/backgroundTerminals/clean", "cleanBackgroundTerminals"),
+            path_prefix="webview/assets/",
+        )
+        tab_rel = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="builtin-background-terminal-tab",
+            include_all=("Background terminal", "backgroundTerminals"),
+            path_contains=("local-conversation-thread-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError as exc:
+        return {
+            "ok": False,
+            "reason": exc.reason,
+            "details": exc.details,
+        }
+    return {
+        "ok": True,
+        "managerBundle": manager_rel,
+        "terminalTabBundle": tab_rel,
+        "cleanMethod": "thread/backgroundTerminals/clean",
+    }
+
+
+def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dict[str, Any]:
+    if not yes:
+        raise m.ControllerError(
+            "confirmation-required",
+            "Pass --yes to patch the configured Codex.app target.",
+        )
+    app = m.DEFAULT_USER_APP
+    if not m.path_is_user_writable_app(app):
+        raise m.ControllerError(
+            "patch-target-not-supported",
+            "Patch target must be the configured Codex.app target.",
+        )
+    target_before = m.analyze_app(app, role="patch-target-before")
+    if not target_before.get("exists"):
+        raise m.ControllerError(
+            "patch-target-missing",
+            "Configured Codex.app target does not exist.",
+            details=target_before,
+        )
+    if target_before.get("codexVersion") != m.EXPECTED_CODEX_VERSION:
+        raise m.ControllerError(
+            "patch-target-version-mismatch",
+            "Configured Codex.app version is not supported by this patch revision.",
+            details={
+                "expected": m.EXPECTED_CODEX_VERSION,
+                "actual": target_before.get("codexVersion"),
+                "app": str(app),
+            },
+        )
+    if target_before.get("oldPatchMarkers"):
+        raise m.ControllerError(
+            "old-patch-not-removed",
+            "Old ASAR patch markers are still present.",
+            details=target_before,
+        )
+
+    builtin_ui = scan_builtin_background_terminal_ui(app)
+    if builtin_ui.get("ok") is not True:
+        raise m.ControllerError(
+            "builtin-background-terminal-ui-missing",
+            "This Codex App build does not expose the expected built-in background terminal UI.",
+            details=builtin_ui,
+        )
+
+    running_before = m.app_processes(app)
+    build_step = m.build_native_binary()
+    stop_report = {
+        "attempted": False,
+        "terminatedPids": [],
+        "forcedPids": [],
+        "remainingPids": [],
+        "errors": [],
+        "skippedBecauseCurrentBuildUsesLiveAtomicReplace": True,
+        "allowRunningRequested": allow_running,
+        "runningPids": [int(item["pid"]) for item in running_before],
+        "nativeInstallMode": "atomic-replace-live-processes-continue-old-inode",
+    }
+    native_step = m.install_native_binary(app, build_step)
+    if not native_step.get("ok"):
+        raise m.ControllerError(
+            "native-install-failed",
+            "Patched native binary was not installed correctly.",
+            details=native_step,
+        )
+    xattr_clear = m.run(["xattr", "-cr", str(app)], timeout=60)
+    codesign_adhoc = m.run(
+        ["codesign", "--force", "--deep", "--sign", "-", str(app)],
+        timeout=180,
+    )
+    target_after = m.analyze_app(app, role="patch-target-after")
+    codex_version_command = target_after.get("codexVersionCommand")
+    codex_version_ok = (
+        isinstance(codex_version_command, dict)
+        and codex_version_command.get("returncode") == 0
+        and codex_version_command.get("stdout") == m.EXPECTED_CODEX_VERSION
+    )
+    native_ok = (
+        target_after.get("nativePatchMarkersOk") is True
+        and target_after.get("codexHash") == native_step.get("afterSha256")
+        and codex_version_ok
+    )
+    asar_unchanged = (
+        target_before.get("asarFileSha256") == target_after.get("asarFileSha256")
+        and target_before.get("asarHeaderSha256") == target_after.get("asarHeaderSha256")
+    )
+    return {
+        "ok": target_after.get("exists") is True
+        and target_after.get("asarIntegrityOk") is True
+        and builtin_ui.get("ok") is True
+        and codesign_adhoc.returncode == 0
+        and native_ok
+        and asar_unchanged,
+        "changeId": m.CHANGE_ID,
+        "generatedAtMs": m.current_millis(),
+        "mode": "native-hook-with-built-in-background-terminal-ui",
+        "steps": [build_step, native_step],
+        "builtinBackgroundTerminalUi": builtin_ui,
+        "asarUnchanged": asar_unchanged,
+        "xattrClear": xattr_clear.as_dict(),
+        "codesignAdhoc": codesign_adhoc.as_dict(),
+        "codexVersionOk": codex_version_ok,
+        "stopUserApp": stop_report,
+        "targetBefore": target_before,
+        "targetAfter": target_after,
+    }
+
+
+def status_report_compatible() -> dict[str, Any]:
+    result = ORIG_STATUS_REPORT()
+    target = result.get("patchTargetApp")
+    if not isinstance(target, dict):
+        return result
+    builtin_ui = scan_builtin_background_terminal_ui(m.DEFAULT_USER_APP)
+    installed_patch_ok = (
+        target.get("exists") is True
+        and target.get("codexVersion") == m.EXPECTED_CODEX_VERSION
+        and target.get("nativePatchMarkersOk") is True
+        and target.get("asarIntegrityOk") is True
+        and target.get("signatureValid") is True
+        and not target.get("oldPatchMarkers")
+        and builtin_ui.get("ok") is True
+    )
+    result["installedPatchOk"] = installed_patch_ok
+    result["statusMode"] = (
+        "installed-current-native-hook" if installed_patch_ok else "clean-source-analysis"
+    )
+    result["builtinBackgroundTerminalUi"] = builtin_ui
+    if installed_patch_ok:
+        result["ok"] = True
+        result["fatalReason"] = None
+        result["installedPatchedTarget"] = target
+    return result
+
+
 def install_monkeypatches() -> None:
     m.analyze_app = analyze_app_compatible
     m.apply_ctrl_b_ui_patch = apply_ctrl_b_ui_patch
@@ -2202,6 +2711,8 @@ def install_monkeypatches() -> None:
     m.apply_output_tab_command_header_patch = apply_output_tab_command_header_patch
     m.scan_task005_ui_bindings = scan_task005_ui_bindings
     m.scan_app_control_bridge = scan_app_control_bridge
+    m.apply_patch_to_user_copy = apply_current_native_patch
+    m.status_report = status_report_compatible
 
 
 def configure_app_target(app_arg: str | None) -> None:

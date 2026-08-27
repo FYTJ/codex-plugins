@@ -4,7 +4,7 @@
 
 - `command-approval-hook/`：在 Bash 工具执行前检查命令黑名单，命中时弹出 macOS 审批窗口。
 - `codex-rewind/`：提供 `/rewind`，支持选择历史对话点并回退会话、工作区文件，或两者同时回退。
-- `background-shell/`：提供 Codex App background shell patch 控制器和 `openai/codex` Rust/native patch 文件。
+- `background-shell/`：提供 Codex App background shell native hook 控制器和 `openai/codex` Rust patch 文件；当前适配 App `26.814.41407 (6720)`。
 
 详细用法见 [docs/USAGE.md](docs/USAGE.md)。
 
@@ -13,7 +13,7 @@
 - macOS。
 - Python 3。
 - Codex 配置目录默认是 `~/.codex`。
-- Codex App 默认安装在 `/Applications/Codex.app`。如果不在这个位置，运行 patch 脚本时传入 `--app`。
+- 当前 background shell hook 默认面向 `/Applications/ChatGPT.app`。如果不在这个位置，运行 current wrapper 时传入 `--app`。
 - `codex-rewind-patch-app` 需要 `asar`；脚本会优先使用系统 `asar`，否则尝试 `npx --yes @electron/asar`。
 
 仓库中的配置示例不包含本机用户名、私有服务器、凭据、token 或真实环境路径。
@@ -140,7 +140,7 @@ enabled = true
 python3 -m py_compile "$HOME/.codex/hooks/block_blacklisted_commands.py"
 "$HOME/.codex/bin/codex-rewind" --help
 "$HOME/.codex/bin/codex-rewind-patch-app" --help
-"$HOME/.codex/bin/codex-background-shell-patch-app" --self-test --json
+"$HOME/.codex/bin/codex-background-shell-patch-current" --self-test --json
 ```
 
 如果需要在 Codex App 里直接拦截 `/rewind`，先退出正在运行的 Codex App，然后执行：
@@ -164,7 +164,7 @@ rm -rf "$HOME/.codex/plugins/background-shell"
 cp -R background-shell "$HOME/.codex/plugins/background-shell"
 ```
 
-Codex App 每次更新后都可能覆盖 `app.asar`，需要重新运行：
+Codex App 每次更新后都可能覆盖已安装的 patch，需要重新检查：
 
 ```bash
 "$HOME/.codex/bin/codex-rewind-patch-app" --dry-run
@@ -172,13 +172,13 @@ Codex App 每次更新后都可能覆盖 `app.asar`，需要重新运行：
 
 若显示需要 patch，再运行不带 `--dry-run` 的命令。
 
-background shell patch 需要重新检查并按需应用：
+background shell hook 需要用当前 build wrapper 检查并按需应用：
 
 ```bash
-"$HOME/.codex/bin/codex-background-shell-patch-app" --status --json
+"$HOME/.codex/bin/codex-background-shell-patch-current" --status --json
 ```
 
-若当前 Codex App bundle 已更新导致通用 ASAR 定位失效，改用当前版本兼容 wrapper，并保持 Codex 运行：
+若状态显示当前 App build 仍受支持，可直接应用；脚本不会停止或重启 Codex App：
 
 ```bash
 "$HOME/.codex/bin/codex-background-shell-patch-current"
@@ -187,6 +187,6 @@ background shell patch 需要重新检查并按需应用：
 ## 发布边界
 
 - 不提交真实 `~/.codex/config.toml`、真实 `hooks.state`、token、cookie、浏览器 profile 或 `.env`。
-- 文档中只使用 `~/.codex`、`$HOME` 和 `/Applications/Codex.app` 这类可移植路径。
+- 文档中只使用 `~/.codex`、`$HOME`、`/Applications/Codex.app` 和 `/Applications/ChatGPT.app` 这类可移植路径。
 - `codex-rewind/` 的发布包默认自包含：`bin/` wrapper 会调用同目录下的 `scripts/`。
 - `background-shell/` 不包含上游 `openai/codex` checkout、Rust `target/`、验证报告、截图、App bundle 或 DMG。
