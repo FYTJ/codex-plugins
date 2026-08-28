@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import argparse
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,8 +14,9 @@ import codex_background_terminal_patch_app as m
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
 ORIG_STATUS_REPORT = m.status_report
-SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.148.0-alpha.15"}
+SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.150.0-alpha.12.2"}
 SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
+    "codex-cli 0.148.0-alpha.15",
     "codex-cli 0.144.0-alpha.4",
     "codex-cli 0.144.2",
     "codex-cli 0.145.0-alpha.18",
@@ -1960,13 +1962,130 @@ def apply_app_control_bridge_patch(asar_path: Path, header: dict[str, Any], data
         m.APP_CONTROL_MAIN_REL = old
 
 
+def apply_output_tab_command_header_patch_7303(
+    asar_path: Path,
+    header: dict[str, Any],
+    data_offset: int,
+) -> dict[str, Any] | None:
+    try:
+        tab_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="output-tab-path-7303",
+            include_all=("backgroundTerminalTab.noOutput", "aggregatedOutput"),
+            path_contains=("local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+        command_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="command-title-path-7303",
+            include_all=("commandActions.length-1", "(?:bash|cmd"),
+            path_contains=("command-execution-command-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        return None
+
+    tab_original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), tab_rel),
+        m.read_asar_file(asar_path, header, data_offset, tab_rel),
+    )
+    tab_text = tab_original.decode("utf-8")
+    tab_before = (
+        "function _(e){let t=(0,x.c)(5),{conversationId:n,terminalId:r}=e,i=a(h,n),o;"
+        "t[0]!==r||t[1]!==i?(o=b(i,r),t[0]=r,t[1]=i,t[2]=o):o=t[2];"
+        "let s=o,c=v(r),l=s?.aggregatedOutput??c?.buffer??``,u;"
+        "return t[3]===l?u=t[4]:(u=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:l.length>0?(0,C.jsx)(w,{output:l}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(d,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=l,t[4]=u),u}"
+    )
+    tab_after = (
+        "function _(e){let t=(0,x.c)(5),{conversationId:n,terminalId:r}=e,i=a(h,n),o;"
+        "t[0]!==r||t[1]!==i?(o=b(i,r),t[0]=r,t[1]=i,t[2]=o):o=t[2];"
+        "let s=o,c=v(r),l=s?.command?.trim()??``,u=s?.aggregatedOutput??c?.buffer??``,p=l.length>0?`${l}\\n${u}`:u,m;"
+        "return t[3]===p?m=t[4]:(m=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:p.length>0?(0,C.jsx)(w,{output:p}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(d,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=p,t[4]=m),m}"
+    )
+    tab_text, tab_step = m.replace_text_variants_in_text(
+        tab_text,
+        tab_rel,
+        [(tab_before, tab_after)],
+        step_name="output-tab-command-line-header-7303",
+    )
+
+    command_original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), command_rel),
+        m.read_asar_file(asar_path, header, data_offset, command_rel),
+    )
+    command_text = command_original.decode("utf-8")
+    title_before = (
+        "function t(e){for(let t=e.commandActions.length-1;t>=0;--t){"
+        "let r=e.commandActions[t]?.command.trim()??``;if(r.length>0&&!n(r))return r}"
+        "let t=e.command.trim();return n(t)?``:t}"
+    )
+    title_after = (
+        "function t(e){let t=e.command.trim();if(t.length>0)return t;"
+        "for(let r=e.commandActions.length-1;r>=0;--r){let i=e.commandActions[r]?.command.trim()??``;"
+        "if(i.length>0)return i}return ``}"
+    )
+    command_text, title_step = m.replace_text_variants_in_text(
+        command_text,
+        command_rel,
+        [(title_before, title_after)],
+        step_name="summary-full-command-title-7303",
+    )
+
+    tab_updated = tab_text.encode("utf-8")
+    command_updated = command_text.encode("utf-8")
+    PENDING_ASAR_CONTENT[(str(asar_path), tab_rel)] = tab_updated
+    PENDING_ASAR_CONTENT[(str(asar_path), command_rel)] = command_updated
+    tab_syntax = m.javascript_syntax_check(tab_rel, tab_text)
+    command_syntax = m.javascript_syntax_check(command_rel, command_text)
+    if tab_syntax.get("ok") is not True or command_syntax.get("ok") is not True:
+        raise m.ControllerError(
+            "javascript-syntax-check-failed",
+            "Patched build 7303 background terminal bundles failed JavaScript syntax validation.",
+            details={"tab": tab_syntax, "command": command_syntax},
+        )
+    return {
+        "name": "output-tab-command-header",
+        "target": tab_rel,
+        "beforeSha256": hashlib.sha256(tab_original).hexdigest(),
+        "afterSha256": hashlib.sha256(tab_updated).hexdigest(),
+        "beforeSize": len(tab_original),
+        "afterSize": len(tab_updated),
+        "alreadyApplied": tab_step["alreadyApplied"] and title_step["alreadyApplied"],
+        "substeps": [tab_step, title_step],
+        "syntaxCheck": {"tab": tab_syntax, "command": command_syntax},
+        "content": tab_updated,
+        "additionalTargets": [command_rel],
+    }
+
+
 def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> dict[str, Any]:
+    build_7303 = apply_output_tab_command_header_patch_7303(
+        asar_path, header, data_offset
+    )
+    if build_7303 is not None:
+        return build_7303
+
     rel_path = find_text_entry(
         asar_path,
         header,
         data_offset,
         step_name="output-tab-path",
-        include_all=("backgroundTerminalTab.noOutput", "background-terminal:${n}:${t.id}"),
+        include_all=("backgroundTerminalTab.noOutput", "function I(e)", "function N("),
+        path_contains=("command-execution-command-",),
         path_prefix="webview/assets/",
     )
     original = PENDING_ASAR_CONTENT.get(
@@ -1974,6 +2093,36 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         m.read_asar_file(asar_path, header, data_offset, rel_path),
     )
     text = original.decode("utf-8")
+
+    function_6720_before = (
+        "function w(e){let t=(0,O.c)(5),{conversationId:i,terminalId:o}=e,s=a(r,i),c;"
+        "t[0]!==o||t[1]!==s?(c=D(s,o),t[0]=o,t[1]=s,t[2]=c):c=t[2];"
+        "let l=c,u=T(o),d=l?.aggregatedOutput??u?.buffer??``,f;"
+        "return t[3]===d?f=t[4]:(f=(0,A.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:d.length>0?(0,A.jsx)(j,{output:d}):(0,A.jsx)(`div`,{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,A.jsx)(n,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=d,t[4]=f),f}"
+    )
+    function_6720_after = (
+        "function w(e){let t=(0,O.c)(5),{conversationId:i,terminalId:o,command:s}=e,c=a(r,i),l;"
+        "t[0]!==o||t[1]!==c?(l=D(c,o),t[0]=o,t[1]=c,t[2]=l):l=t[2];"
+        "let u=l,d=T(o),f=u?.aggregatedOutput??d?.buffer??``,p=s??``,m=p.length>0?`${p}\\n${f}`:f,h;"
+        "return t[3]===m?h=t[4]:(h=(0,A.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:m.length>0?(0,A.jsx)(j,{output:m}):(0,A.jsx)(`div`,{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,A.jsx)(n,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=m,t[4]=h),h}"
+    )
+    title_6720_before = (
+        "function I(e){for(let t=e.commandActions.length-1;t>=0;--t){let n=e.commandActions[t]?.command.trim()??``;"
+        "if(n.length>0&&!L(n))return n}let t=e.command.trim();return L(t)?``:t}"
+    )
+    title_6720_after = (
+        "function I(e){let t=e.command.trim();if(t.length>0)return t;"
+        "for(let n=e.commandActions.length-1;n>=0;--n){let r=e.commandActions[n]?.command.trim()??``;"
+        "if(r.length>0)return r}return ``}"
+    )
 
     function_old_before = (
         "function Oce(e){let t=(0,Y6.c)(5),{conversationId:n,terminalId:r}=e,i=Os(Yc,n),a;"
@@ -2186,6 +2335,8 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
     props_before = "props:{conversationId:n,terminalId:t.id},id:`background-terminal:${n}:${t.id}`"
     props_command_after = "props:{conversationId:n,terminalId:t.id,command:t.command},id:`background-terminal:${n}:${t.id}`"
     props_after = "props:{conversationId:n,terminalId:t.id,command:t.command,output:t.output??``},id:`background-terminal:${n}:${t.id}`"
+    props_6720_before = "props:{conversationId:r,terminalId:n.id},title:n.command.length>0?n.command:i"
+    props_6720_after = "props:{conversationId:r,terminalId:n.id,command:n.command},title:n.command.length>0?n.command:i"
 
     command_before_new = (
         '"interrupt-conversation":e9(async(e,{conversationId:t,initiatedBy:n},r)=>'
@@ -2237,6 +2388,7 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         text,
         rel_path,
         [
+            (function_6720_before, function_6720_after),
             (function_old_before, function_old_after),
             (function_new_before, function_new_after),
             (function_current_before, function_current_after),
@@ -2252,8 +2404,26 @@ def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any
         step_name="output-tab-command-line-header",
     )
     substeps.append(step)
-    text, step = m.replace_text_variants_in_text(text, rel_path, [(props_before, props_after), (props_command_after, props_after)], step_name="output-tab-command-prop")
+    text, step = m.replace_text_variants_in_text(
+        text,
+        rel_path,
+        [
+            (props_6720_before, props_6720_after),
+            (props_before, props_after),
+            (props_command_after, props_after),
+        ],
+        step_name="output-tab-command-prop",
+    )
     substeps.append(step)
+    title_variants = [(title_6720_before, title_6720_after)]
+    if any(before in text or after in text for before, after in title_variants):
+        text, step = m.replace_text_variants_in_text(
+            text,
+            rel_path,
+            title_variants,
+            step_name="summary-full-command-title",
+        )
+        substeps.append(step)
     command_variants = [
         (command_before_new, command_after_new),
         (command_before_current, command_after_current),
@@ -2569,6 +2739,140 @@ def scan_builtin_background_terminal_ui(app: Path) -> dict[str, Any]:
     }
 
 
+def scan_current_command_ui(app: Path) -> dict[str, Any]:
+    if not app.exists():
+        return {"ok": False, "reason": "app-missing", "checks": {}}
+    paths = m.app_paths(app)
+    header, _header_size, data_offset = m.read_asar_header(paths["asar"])
+    try:
+        tab_rel = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="current-command-ui-tab-7303",
+            include_all=("backgroundTerminalTab.noOutput", "aggregatedOutput"),
+            path_contains=("local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+        command_rel = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="current-command-ui-title-7303",
+            include_all=("commandActions.length-1", "(?:bash|cmd"),
+            path_contains=("command-execution-command-",),
+            path_prefix="webview/assets/",
+        )
+        thread_rel = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="current-command-ui-summary-7303",
+            include_all=(
+                "backgroundTerminals.defaultLabel",
+                "terminal.command.length>0",
+            ),
+            path_contains=("local-conversation-thread-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        pass
+    else:
+        tab_text = m.read_asar_file(
+            paths["asar"], header, data_offset, tab_rel
+        ).decode("utf-8", "replace")
+        command_text = m.read_asar_file(
+            paths["asar"], header, data_offset, command_rel
+        ).decode("utf-8", "replace")
+        thread_text = m.read_asar_file(
+            paths["asar"], header, data_offset, thread_rel
+        ).decode("utf-8", "replace")
+        tab_syntax = m.javascript_syntax_check(tab_rel, tab_text)
+        command_syntax = m.javascript_syntax_check(command_rel, command_text)
+        checks = {
+            "summaryUsesFullCommandTitle": (
+                "function t(e){let t=e.command.trim();if(t.length>0)return t;"
+                in command_text
+                and "terminal.command.length>0" in thread_text
+            ),
+            "outputTabPrependsCommandLine": (
+                "l=s?.command?.trim()??``" in tab_text
+                and "p=l.length>0?`${l}\\n${u}`:u" in tab_text
+                and "children:p.length>0" in tab_text
+            ),
+            "fallbackLabelRemainsAvailable": (
+                "backgroundTerminals.defaultLabel" in thread_text
+                and "backgroundTerminalTab.title" in thread_text
+            ),
+            "javascriptSyntaxOk": (
+                tab_syntax.get("ok") is True
+                and command_syntax.get("ok") is True
+            ),
+        }
+        return {
+            "ok": all(checks.values()),
+            "bundle": tab_rel,
+            "bundles": {
+                "outputTab": tab_rel,
+                "commandTitle": command_rel,
+                "summary": thread_rel,
+            },
+            "checks": checks,
+            "syntaxCheck": {"tab": tab_syntax, "command": command_syntax},
+            "sha256": {
+                "outputTab": hashlib.sha256(tab_text.encode("utf-8")).hexdigest(),
+                "commandTitle": hashlib.sha256(command_text.encode("utf-8")).hexdigest(),
+            },
+        }
+    try:
+        rel_path = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="current-command-ui-bundle",
+            include_all=("backgroundTerminalTab.noOutput", "function I(e)", "function N("),
+            path_contains=("command-execution-command-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError as exc:
+        return {
+            "ok": False,
+            "reason": exc.reason,
+            "details": exc.details,
+            "checks": {},
+        }
+    text = m.read_asar_file(paths["asar"], header, data_offset, rel_path).decode(
+        "utf-8", "replace"
+    )
+    syntax_check = m.javascript_syntax_check(rel_path, text)
+    checks = {
+        "summaryUsesFullCommandTitle": (
+            "function I(e){let t=e.command.trim();if(t.length>0)return t;" in text
+        ),
+        "outputTabReceivesCommandProp": (
+            "props:{conversationId:r,terminalId:n.id,command:n.command},"
+            "title:n.command.length>0?n.command:i" in text
+        ),
+        "outputTabPrependsCommandLine": (
+            "{conversationId:i,terminalId:o,command:s}=e" in text
+            and "m=p.length>0?`${p}\\n${f}`:f" in text
+            and "children:m.length>0" in text
+        ),
+        "fallbackLabelRemainsAvailable": (
+            "fallbackTitle:i" in text
+            and "title:n.command.length>0?n.command:i" in text
+        ),
+        "javascriptSyntaxOk": syntax_check.get("ok") is True,
+    }
+    return {
+        "ok": all(checks.values()),
+        "bundle": rel_path,
+        "checks": checks,
+        "syntaxCheck": syntax_check,
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
 def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dict[str, Any]:
     if not yes:
         raise m.ControllerError(
@@ -2612,6 +2916,7 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
             "This Codex App build does not expose the expected built-in background terminal UI.",
             details=builtin_ui,
         )
+    command_ui_before = scan_current_command_ui(app)
 
     running_before = m.app_processes(app)
     build_step = m.build_native_binary()
@@ -2621,10 +2926,10 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
         "forcedPids": [],
         "remainingPids": [],
         "errors": [],
-        "skippedBecauseCurrentBuildUsesLiveAtomicReplace": True,
+        "skippedBecauseCurrentBuildSupportsLiveAtomicReplace": True,
         "allowRunningRequested": allow_running,
         "runningPids": [int(item["pid"]) for item in running_before],
-        "nativeInstallMode": "atomic-replace-live-processes-continue-old-inode",
+        "installMode": "atomic-replace-live-processes-continue-old-inodes",
     }
     native_step = m.install_native_binary(app, build_step)
     if not native_step.get("ok"):
@@ -2633,6 +2938,41 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
             "Patched native binary was not installed correctly.",
             details=native_step,
         )
+
+    PENDING_ASAR_CONTENT.clear()
+    asar_path = m.app_paths(app)["asar"]
+    info_path = m.app_paths(app)["info"]
+    header, _header_size, data_offset = m.read_asar_header(asar_path)
+    output_tab_step = apply_output_tab_command_header_patch(
+        asar_path, header, data_offset
+    )
+    backup_dir = m.REPORT_ROOT / m.CHANGE_ID / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_suffix = m.current_millis()
+    asar_backup = backup_dir / f"app.asar-{backup_suffix}"
+    info_backup = backup_dir / f"Info.plist-{backup_suffix}"
+    shutil.copy2(asar_path, asar_backup)
+    shutil.copy2(info_path, info_backup)
+    try:
+        asar_replacements = {
+            rel_path: content
+            for (archive_path, rel_path), content in PENDING_ASAR_CONTENT.items()
+            if archive_path == str(asar_path)
+        }
+        repack = m.write_asar_archive(
+            asar_path,
+            header,
+            data_offset,
+            asar_replacements,
+        )
+        plist_update = m.update_info_plist_asar_integrity(
+            app, str(repack["asarHeaderSha256"])
+        )
+    except Exception:
+        shutil.copy2(asar_backup, asar_path)
+        shutil.copy2(info_backup, info_path)
+        raise
+
     xattr_clear = m.run(["xattr", "-cr", str(app)], timeout=60)
     codesign_adhoc = m.run(
         ["codesign", "--force", "--deep", "--sign", "-", str(app)],
@@ -2650,23 +2990,29 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
         and target_after.get("codexHash") == native_step.get("afterSha256")
         and codex_version_ok
     )
-    asar_unchanged = (
-        target_before.get("asarFileSha256") == target_after.get("asarFileSha256")
-        and target_before.get("asarHeaderSha256") == target_after.get("asarHeaderSha256")
-    )
+    command_ui_after = scan_current_command_ui(app)
+    output_tab_report = {
+        key: value for key, value in output_tab_step.items() if key != "content"
+    }
     return {
         "ok": target_after.get("exists") is True
         and target_after.get("asarIntegrityOk") is True
         and builtin_ui.get("ok") is True
+        and command_ui_after.get("ok") is True
         and codesign_adhoc.returncode == 0
         and native_ok
-        and asar_unchanged,
+        and target_after.get("asarIntegrityOk") is True,
         "changeId": m.CHANGE_ID,
         "generatedAtMs": m.current_millis(),
-        "mode": "native-hook-with-built-in-background-terminal-ui",
-        "steps": [build_step, native_step],
+        "mode": "native-hook-with-command-aware-background-terminal-ui",
+        "steps": [build_step, native_step, output_tab_report],
         "builtinBackgroundTerminalUi": builtin_ui,
-        "asarUnchanged": asar_unchanged,
+        "commandUiBefore": command_ui_before,
+        "commandUiAfter": command_ui_after,
+        "asarRepack": repack,
+        "asarBackup": str(asar_backup),
+        "infoPlistBackup": str(info_backup),
+        "plistUpdate": plist_update,
         "xattrClear": xattr_clear.as_dict(),
         "codesignAdhoc": codesign_adhoc.as_dict(),
         "codexVersionOk": codex_version_ok,
@@ -2682,6 +3028,7 @@ def status_report_compatible() -> dict[str, Any]:
     if not isinstance(target, dict):
         return result
     builtin_ui = scan_builtin_background_terminal_ui(m.DEFAULT_USER_APP)
+    command_ui = scan_current_command_ui(m.DEFAULT_USER_APP)
     installed_patch_ok = (
         target.get("exists") is True
         and target.get("codexVersion") == m.EXPECTED_CODEX_VERSION
@@ -2690,12 +3037,16 @@ def status_report_compatible() -> dict[str, Any]:
         and target.get("signatureValid") is True
         and not target.get("oldPatchMarkers")
         and builtin_ui.get("ok") is True
+        and command_ui.get("ok") is True
     )
     result["installedPatchOk"] = installed_patch_ok
     result["statusMode"] = (
-        "installed-current-native-hook" if installed_patch_ok else "clean-source-analysis"
+        "installed-current-command-aware-hook"
+        if installed_patch_ok
+        else "clean-source-analysis"
     )
     result["builtinBackgroundTerminalUi"] = builtin_ui
+    result["commandAwareBackgroundTerminalUi"] = command_ui
     if installed_patch_ok:
         result["ok"] = True
         result["fatalReason"] = None

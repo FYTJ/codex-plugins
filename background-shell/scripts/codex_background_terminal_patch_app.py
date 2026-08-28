@@ -42,16 +42,16 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-current"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-0.150.0-alpha.12.2"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-EXPECTED_SOURCE_HEAD = "a9ed4f154a4fad64acf538d6418d3ed012aeab86"
-EXPECTED_CODEX_VERSION = "codex-cli 0.148.0-alpha.15"
+EXPECTED_SOURCE_HEAD = "a9802304f60ab14c0b07e3ee0db9a9c105ab0cb3"
+EXPECTED_CODEX_VERSION = "codex-cli 0.150.0-alpha.12.2"
 RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
 RUSTC = RUST_TOOLCHAIN / "rustc"
 CARGO = RUST_TOOLCHAIN / "cargo"
 BUILT_CODEX_BINARY = CODEX_RS / "target" / "release" / "codex"
 NATIVE_PATCH_FILE = Path(__file__).with_name("openai-codex-background-shell.patch")
-CHANGE_ID = "change-20260826-codex-0148-15"
+CHANGE_ID = "change-20260828-codex-0150-12-2-build-7303"
 APP_BUNDLE_ID = "com.openai.codex"
 OPENAI_TEAM_ID = "2DC432GLL2"
 AUTO_BACKGROUND_THRESHOLD_SECONDS = 300
@@ -679,8 +679,8 @@ def self_test() -> dict[str, Any]:
     check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
     check("source head is pinned to the supported app release", len(EXPECTED_SOURCE_HEAD) == 40)
     check(
-        "Codex version is pinned to 0.148.0-alpha.15",
-        EXPECTED_CODEX_VERSION == "codex-cli 0.148.0-alpha.15",
+        "Codex version is pinned to 0.150.0-alpha.12.2",
+        EXPECTED_CODEX_VERSION == "codex-cli 0.150.0-alpha.12.2",
     )
     check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
     check("busy wakeup scenario is registered", "busy-wakeup-30s" in SCENARIO_TESTS)
