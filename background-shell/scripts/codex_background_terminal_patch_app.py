@@ -1995,7 +1995,13 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         ),
         "busyDeferredPathUsesIdleTurn": "spawn_deferred_background_wakeup_idle_turn" in session_inject
         and "busy_deferred_idle_turn" in session_inject,
-        "idleDirectPathUsesNativeGate": "try_start_turn_if_idle" in session_inject
+        "idleDirectPathUsesNativeGate": (
+            "try_start_turn_if_idle" in session_inject
+            or (
+                "start_background_wakeup_turn_if_idle" in session_inject
+                and "TurnInputMode::StartIfIdle" in session_inject
+            )
+        )
         and "idle_direct_turn" in session_inject,
         "completionWatcherDispatchesWakeup": "dispatch_background_terminal_wakeup" in async_watcher
         and "background_wakeup_armed" in async_watcher,
