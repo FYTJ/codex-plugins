@@ -4,18 +4,18 @@
 
 ## 当前兼容基线
 
-- Codex App：`26.825.32147 (7303)`
+- Codex App：`26.911.61220 (9647)`
 - 默认安装路径：`/Applications/ChatGPT.app`
 - Bundle ID：`com.openai.codex`
-- bundled CLI：`codex-cli 0.150.0-alpha.12.2`
-- `openai/codex` 源码提交：`a9802304f60ab14c0b07e3ee0db9a9c105ab0cb3`（tag `rust-v0.150.0-alpha.12.2`）
+- bundled CLI：`codex-cli 0.155.0-alpha.2.6`
+- `openai/codex` 源码提交：`bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6`（tag `rust-v0.155.0-alpha.2.6`）
 - Rust 工具链：`1.95.0-aarch64-apple-darwin`
 
-这一版适配 App build 7303：替换 `Contents/Resources/codex` native binary，并更新新版拆分后的命令提取与后台终端输出两个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
+这一版适配 App build 9647：替换 `Contents/Resources/codex` native binary，并更新新版拆分后的命令提取与后台终端输出两个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
 
 ## 主要文件
 
-- `scripts/codex_background_terminal_patch_current.py`：build 7303 的主入口；识别新版拆分后的后台终端 UI，并以原子替换方式安装 native hook 与命令 UI 补丁。
+- `scripts/codex_background_terminal_patch_current.py`：build 9647 的主入口；识别新版拆分后的后台终端 UI，并以原子替换方式安装 native hook 与命令 UI 补丁。
 - `scripts/codex_background_terminal_patch_app.py`：fail-closed 基础控制器，负责源码校验、构建、备份、签名、状态和场景验证。
 - `scripts/openai-codex-background-shell.patch`：基于上述固定 `openai/codex` 提交生成的 Rust/native patch。
 - `bin/codex-background-shell-patch-current`：调用当前 build 兼容 wrapper 的命令入口。
@@ -42,12 +42,12 @@ chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch
 控制器不会把上游源码 vendoring 到发布仓库。首次使用前，在插件目录中准备固定提交并应用随附 patch：
 
 ```bash
-cd "$HOME/.codex/plugins/background-shell"
+cd "$HOME/.codex/plugins/background-shell/scripts"
 mkdir -p external-sources
-git clone https://github.com/openai/codex external-sources/openai-codex-0.150.0-alpha.12.2
-git -C external-sources/openai-codex-0.150.0-alpha.12.2 checkout a9802304f60ab14c0b07e3ee0db9a9c105ab0cb3
-git -C external-sources/openai-codex-0.150.0-alpha.12.2 apply --check ../../scripts/openai-codex-background-shell.patch
-git -C external-sources/openai-codex-0.150.0-alpha.12.2 apply ../../scripts/openai-codex-background-shell.patch
+git clone https://github.com/openai/codex external-sources/openai-codex-0.155.0-alpha.2.6
+git -C external-sources/openai-codex-0.155.0-alpha.2.6 checkout bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6
+git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply --check ../../openai-codex-background-shell.patch
+git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-background-shell.patch
 ```
 
 控制器固定使用：
@@ -57,7 +57,7 @@ git -C external-sources/openai-codex-0.150.0-alpha.12.2 apply ../../scripts/open
 ~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/rustc
 ```
 
-源码目录必须保持在提交 `a9802304f60ab14c0b07e3ee0db9a9c105ab0cb3`，且工作区差异（除 `Cargo.lock`）必须与随附 patch 完全一致；控制器会 fail closed 校验这两项。
+源码目录必须保持在提交 `bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6`，且工作区差异（除 `Cargo.lock`）必须与随附 patch 完全一致；控制器会 fail closed 校验这两项。
 
 ## 常用命令
 
@@ -102,19 +102,18 @@ git -C external-sources/openai-codex-0.150.0-alpha.12.2 apply ../../scripts/open
 
 ## 已验证链路
 
-build 7303 上已经验证：
+build 9647 上已经验证：
 
 - `cargo check -p codex-core -p codex-app-server-protocol -p codex-app-server`
-- `RUST_MIN_STACK=8388608 cargo test -p codex-core --lib unified_exec`（86/86）
-- `RUST_MIN_STACK=8388608 cargo test -p codex-app-server --lib background_terminal`（4/4）
+- `cargo test -p codex-core background --lib`（14/14）
+- `cargo test -p codex-app-server background_terminal --lib`（4/4）
 - release binary 构建、版本检查、native 标记、ASAR integrity 和 `codesign --verify --deep --strict`
 - 两个目标 ASAR bundle 的离线重打包、幂等应用、Node 语法检查和安装后扫描
-- 重启后的真实后台成功任务：`background_wakeup-69069-9b511af9-4975-40d4-a545-2c841300482d`，退出码 `0`，自动唤醒并完整回传 stdout
-- 重启后的真实后台失败任务：`background_wakeup-28009-e2d2e608-669c-4687-99f7-261c5c69c48f`，退出码 `7`，自动唤醒并完整回传 stderr
+- build 9647 的真实后台成功/失败通知验证需在用户手动完整重启 Codex App 后执行
 
 ## 不进入仓库的内容
 
-- `external-sources/openai-codex-0.150.0-alpha.12.2/` checkout
+- `external-sources/openai-codex-0.155.0-alpha.2.6/` checkout
 - `codex-rs/target/` 构建产物
 - `background-terminal/reports/` 验证报告、截图和备份
 - Codex App bundle、DMG、profile、会话、认证和本机配置

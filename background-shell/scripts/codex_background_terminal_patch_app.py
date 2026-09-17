@@ -42,16 +42,16 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-0.150.0-alpha.12.2"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-0.155.0-alpha.2.6"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-EXPECTED_SOURCE_HEAD = "a9802304f60ab14c0b07e3ee0db9a9c105ab0cb3"
-EXPECTED_CODEX_VERSION = "codex-cli 0.150.0-alpha.12.2"
+EXPECTED_SOURCE_HEAD = "bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6"
+EXPECTED_CODEX_VERSION = "codex-cli 0.155.0-alpha.2.6"
 RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
 RUSTC = RUST_TOOLCHAIN / "rustc"
 CARGO = RUST_TOOLCHAIN / "cargo"
 BUILT_CODEX_BINARY = CODEX_RS / "target" / "release" / "codex"
 NATIVE_PATCH_FILE = Path(__file__).with_name("openai-codex-background-shell.patch")
-CHANGE_ID = "change-20260828-codex-0150-12-2-build-7303"
+CHANGE_ID = "change-20260916-codex-0155-0-alpha-2-6-build-9647"
 APP_BUNDLE_ID = "com.openai.codex"
 OPENAI_TEAM_ID = "2DC432GLL2"
 AUTO_BACKGROUND_THRESHOLD_SECONDS = 300
@@ -679,8 +679,8 @@ def self_test() -> dict[str, Any]:
     check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
     check("source head is pinned to the supported app release", len(EXPECTED_SOURCE_HEAD) == 40)
     check(
-        "Codex version is pinned to 0.150.0-alpha.12.2",
-        EXPECTED_CODEX_VERSION == "codex-cli 0.150.0-alpha.12.2",
+        "Codex version is pinned to 0.155.0-alpha.2.6",
+        EXPECTED_CODEX_VERSION == "codex-cli 0.155.0-alpha.2.6",
     )
     check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
     check("busy wakeup scenario is registered", "busy-wakeup-30s" in SCENARIO_TESTS)
@@ -2015,6 +2015,13 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         and "BackgroundWakeupPhase::Delivered" in session_inject,
         "guidedMessageStuckGuardPresent": "guided-message-stuck" in session_inject
         and "update_background_wakeup_if_still_pending_delivery" in session_inject,
+        "deferredIdleTimeoutIsOneDay": "Duration::from_secs(86_400)" in session_inject,
+        "wakeupConsumptionRequiresTaskId": "text.contains(&wakeup.notification_id)" in session_inject
+        and "text.contains(&wakeup.process_id)" not in session_inject
+        and "text.contains(&wakeup.command)" not in session_inject,
+        "outputEntryUsesCurrentCommandExecutionSchema": (
+            "event_msg item_completed item.type=CommandExecution item.process_id={}" in session_inject
+        ),
         "busyScenarioTestPresent": "background_terminal_exit_wakeup_is_model_observed_then_delivered" in tests,
         "idleScenarioTestPresent": "background_terminal_idle_wakeup_uses_idle_direct_turn" in tests,
     }

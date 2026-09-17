@@ -14,8 +14,9 @@ import codex_background_terminal_patch_app as m
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
 ORIG_STATUS_REPORT = m.status_report
-SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.150.0-alpha.12.2"}
+SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.155.0-alpha.2.6"}
 SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
+    "codex-cli 0.150.0-alpha.12.2",
     "codex-cli 0.148.0-alpha.15",
     "codex-cli 0.144.0-alpha.4",
     "codex-cli 0.144.2",
@@ -2016,11 +2017,84 @@ def apply_output_tab_command_header_patch_7303(
         "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
         "t[3]=p,t[4]=m),m}"
     )
+    tab_7982_before = (
+        "function _(e){let t=(0,x.c)(6),{conversationId:n,setTabState:r,terminalId:a}=e,o=f(d,n),s;"
+        "t[0]!==a||t[1]!==o?(s=b(o,a),t[0]=a,t[1]=o,t[2]=s):s=t[2];"
+        "let c=s,l=v(a),u=c?.aggregatedOutput??l?.buffer??``,p;"
+        "return t[3]!==u||t[4]!==r?(p=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:u.length>0?(0,C.jsx)(w,{output:u,onRenderedOutputReady:e=>r({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(i,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=u,t[4]=r,t[5]=p):p=t[5],p}"
+    )
+    tab_7982_after = (
+        "function _(e){let t=(0,x.c)(6),{conversationId:n,setTabState:r,terminalId:a}=e,o=f(d,n),s;"
+        "t[0]!==a||t[1]!==o?(s=b(o,a),t[0]=a,t[1]=o,t[2]=s):s=t[2];"
+        "let c=s,l=v(a),u=c?.command?.trim()??``,p=c?.aggregatedOutput??l?.buffer??``,m=u.length>0?`${u}\\n${p}`:p,h;"
+        "return t[3]!==m||t[4]!==r?(h=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:m.length>0?(0,C.jsx)(w,{output:m,onRenderedOutputReady:e=>r({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(i,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=m,t[4]=r,t[5]=h):h=t[5],h}"
+    )
+    tab_8576_before = (
+        "function _(e){let t=(0,x.c)(6),{conversationId:n,setTabState:r,terminalId:a}=e,s=o(u,n),c;"
+        "t[0]!==a||t[1]!==s?(c=b(s,a),t[0]=a,t[1]=s,t[2]=c):c=t[2];"
+        "let l=c,d=v(a),f=l?.aggregatedOutput??d?.buffer??``,p;"
+        "return t[3]!==f||t[4]!==r?(p=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:f.length>0?(0,C.jsx)(w,{output:f,onRenderedOutputReady:e=>r({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(i,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=f,t[4]=r,t[5]=p):p=t[5],p}"
+    )
+    tab_8576_after = (
+        "function _(e){let t=(0,x.c)(6),{conversationId:n,setTabState:r,terminalId:a}=e,s=o(u,n),c;"
+        "t[0]!==a||t[1]!==s?(c=b(s,a),t[0]=a,t[1]=s,t[2]=c):c=t[2];"
+        "let l=c,d=v(a),f=l?.command?.trim()??``,p=l?.aggregatedOutput??d?.buffer??``,m=f.length>0?`${f}\\n${p}`:p,h;"
+        "return t[3]!==m||t[4]!==r?(h=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:m.length>0?(0,C.jsx)(w,{output:m,onRenderedOutputReady:e=>r({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-vscode-editor text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(i,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[3]=m,t[4]=r,t[5]=h):h=t[5],h}"
+    )
+    tab_9647_before = (
+        "function _(e){let t=(0,x.c)(10),{conversationId:n,renderSlots:r,setTabState:i,terminalId:a}=e,s=f(l,n),c;"
+        "t[0]!==a||t[1]!==s?(c=b(s,a),t[0]=a,t[1]=s,t[2]=c):c=t[2];"
+        "let u=c,d=v(a),p=u?.aggregatedOutput??d?.buffer??``,m;"
+        "if(t[3]!==p||t[4]!==r||t[5]!==i){let e;"
+        "t[7]!==p||t[8]!==i?(e=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:p.length>0?(0,C.jsx)(w,{output:p,onRenderedOutputReady:e=>i({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-code text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(o,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[7]=p,t[8]=i,t[9]=e):e=t[9],m=r({headerRows:[],content:e}),t[3]=p,t[4]=r,t[5]=i,t[6]=m}else m=t[6];return m}"
+    )
+    tab_9647_after = (
+        "function _(e){let t=(0,x.c)(10),{conversationId:n,renderSlots:r,setTabState:i,terminalId:a}=e,s=f(l,n),c;"
+        "t[0]!==a||t[1]!==s?(c=b(s,a),t[0]=a,t[1]=s,t[2]=c):c=t[2];"
+        "let u=c,d=v(a),p=u?.command?.trim()??``,m=u?.aggregatedOutput??d?.buffer??``,h=p.length>0?`${p}\\n${m}`:m,g;"
+        "if(t[3]!==h||t[4]!==r||t[5]!==i){let e;"
+        "t[7]!==h||t[8]!==i?(e=(0,C.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:h.length>0?(0,C.jsx)(w,{output:h,onRenderedOutputReady:e=>i({readOutput:e})}):(0,C.jsx)(`div`,"
+        "{className:`p-4 font-code text-size-code-sm text-codex-description`,"
+        "children:(0,C.jsx)(o,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,defaultMessage:`No output yet`,"
+        "description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[7]=h,t[8]=i,t[9]=e):e=t[9],g=r({headerRows:[],content:e}),t[3]=h,t[4]=r,t[5]=i,t[6]=g}else g=t[6];return g}"
+    )
     tab_text, tab_step = m.replace_text_variants_in_text(
         tab_text,
         tab_rel,
-        [(tab_before, tab_after)],
-        step_name="output-tab-command-line-header-7303",
+        [
+            (tab_before, tab_after),
+            (tab_7982_before, tab_7982_after),
+            (tab_8576_before, tab_8576_after),
+            (tab_9647_before, tab_9647_after),
+        ],
+        step_name="output-tab-command-line-header-split-bundle",
     )
 
     command_original = PENDING_ASAR_CONTENT.get(
@@ -2042,7 +2116,7 @@ def apply_output_tab_command_header_patch_7303(
         command_text,
         command_rel,
         [(title_before, title_after)],
-        step_name="summary-full-command-title-7303",
+        step_name="summary-full-command-title-split-bundle",
     )
 
     tab_updated = tab_text.encode("utf-8")
@@ -2054,7 +2128,7 @@ def apply_output_tab_command_header_patch_7303(
     if tab_syntax.get("ok") is not True or command_syntax.get("ok") is not True:
         raise m.ControllerError(
             "javascript-syntax-check-failed",
-            "Patched build 7303 background terminal bundles failed JavaScript syntax validation.",
+            "Patched split background terminal bundles failed JavaScript syntax validation.",
             details={"tab": tab_syntax, "command": command_syntax},
         )
     return {
@@ -2796,9 +2870,26 @@ def scan_current_command_ui(app: Path) -> dict[str, Any]:
                 and "terminal.command.length>0" in thread_text
             ),
             "outputTabPrependsCommandLine": (
-                "l=s?.command?.trim()??``" in tab_text
-                and "p=l.length>0?`${l}\\n${u}`:u" in tab_text
-                and "children:p.length>0" in tab_text
+                (
+                    "l=s?.command?.trim()??``" in tab_text
+                    and "p=l.length>0?`${l}\\n${u}`:u" in tab_text
+                    and "children:p.length>0" in tab_text
+                )
+                or (
+                    "u=c?.command?.trim()??``" in tab_text
+                    and "m=u.length>0?`${u}\\n${p}`:p" in tab_text
+                    and "children:m.length>0" in tab_text
+                )
+                or (
+                    "f=l?.command?.trim()??``" in tab_text
+                    and "m=f.length>0?`${f}\\n${p}`:p" in tab_text
+                    and "children:m.length>0" in tab_text
+                )
+                or (
+                    "p=u?.command?.trim()??``" in tab_text
+                    and "h=p.length>0?`${p}\\n${m}`:m" in tab_text
+                    and "children:h.length>0" in tab_text
+                )
             ),
             "fallbackLabelRemainsAvailable": (
                 "backgroundTerminals.defaultLabel" in thread_text
