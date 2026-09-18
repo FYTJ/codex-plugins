@@ -14,8 +14,13 @@ import codex_background_terminal_patch_app as m
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
 ORIG_STATUS_REPORT = m.status_report
-SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.155.0-alpha.9"}
+SUPPORTED_UNPATCHED_CODEX_VERSIONS = {
+    "codex-cli 0.155.0-alpha.9",
+    "codex-cli 0.153.4",
+    "codex-cli 0.151.0-alpha.7.2",
+}
 SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
+    "codex-cli 0.153.4",
     "codex-cli 0.150.0-alpha.12.2",
     "codex-cli 0.148.0-alpha.15",
     "codex-cli 0.144.0-alpha.4",
@@ -1016,15 +1021,25 @@ def apply_task005_ui_patch_9771(
 
 
 def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> list[dict[str, Any]]:
-    local_thread_rel = find_text_entry(
-        asar_path,
-        header,
-        data_offset,
-        step_name="local-conversation-thread-path",
-        include_all=("backgroundTerminals.defaultLabel", "function hb(e)"),
-        path_contains=("local-conversation-thread",),
-        path_prefix="webview/assets/",
-    )
+    try:
+        local_thread_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="local-conversation-thread-path-9771",
+            include_all=("backgroundTerminals.defaultLabel", "function hb(e)"),
+            path_contains=("local-conversation-thread",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        local_thread_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="local-conversation-thread-path-legacy",
+            path_contains=("local-conversation-thread",),
+            path_prefix="webview/assets/",
+        )
     original = m.read_asar_file(asar_path, header, data_offset, local_thread_rel)
     text = original.decode("utf-8")
     if "function Bb(e){let t=(0,Vb.c)(19)" in text and "function hb(e){" in text:
@@ -2204,7 +2219,7 @@ def apply_output_tab_command_header_patch_9771(
         "t[7]=f,t[8]=a,t[9]=e):e=t[9],m=i({headerRows:[],content:e}),"
         "t[3]=f,t[4]=i,t[5]=a,t[6]=m}else m=t[6];return m}"
     )
-    tab_after = (
+    tab_buggy_after = (
         "function g(e){let t=(0,b.c)(10),{conversationId:r,renderSlots:i,setTabState:a,terminalId:o,command:q,output:k}=e,"
         "s=c(p,r),l;t[0]!==o||t[1]!==s?(l=y(s,o),t[0]=o,t[1]=s,t[2]=l):l=t[2];"
         "let u=l,d=_(o),f=u?.command?.trim()??q?.trim()??``,"
@@ -2218,10 +2233,24 @@ def apply_output_tab_command_header_patch_9771(
         "t[7]=y,t[8]=a,t[9]=e):e=t[9],m=i({headerRows:[],content:e}),"
         "t[3]=y,t[4]=i,t[5]=a,t[6]=m}else m=t[6];return m}"
     )
+    tab_after = (
+        "function g(e){let t=(0,b.c)(10),{conversationId:r,renderSlots:i,setTabState:a,terminalId:o,command:q,output:k}=e,"
+        "s=c(p,r),l;t[0]!==o||t[1]!==s?(l=y(s,o),t[0]=o,t[1]=s,t[2]=l):l=t[2];"
+        "let u=l,d=_(o),f=u?.command?.trim()??q?.trim()??``,"
+        "v=u?.aggregatedOutput??d?.buffer??k??``,h=f.length>0?`${f}\\n${v}`:v,m;"
+        "if(t[3]!==h||t[4]!==i||t[5]!==a){let e;t[7]!==h||t[8]!==a?"
+        "(e=(0,S.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:h.length>0?(0,S.jsx)(C,{output:h,onRenderedOutputReady:e=>a({readOutput:e})}):"
+        "(0,S.jsx)(`div`,{className:`p-4 font-code text-size-code-sm text-codex-description`,"
+        "children:(0,S.jsx)(n,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,"
+        "defaultMessage:`No output yet`,description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[7]=h,t[8]=a,t[9]=e):e=t[9],m=i({headerRows:[],content:e}),"
+        "t[3]=h,t[4]=i,t[5]=a,t[6]=m}else m=t[6];return m}"
+    )
     tab_text, tab_step = m.replace_text_variants_in_text(
         tab_text,
         tab_rel,
-        [(tab_before, tab_after)],
+        [(tab_buggy_after, tab_after), (tab_before, tab_after)],
         step_name="output-tab-command-line-header-9771",
     )
 
@@ -3353,9 +3382,12 @@ def scan_current_command_ui(app: Path) -> dict[str, Any]:
                 )
                 or (
                     "f=u?.command?.trim()??q?.trim()??``" in tab_text
-                    and "y=f.length>0?`${f}\\n${v}`:v" in tab_text
-                    and "children:y.length>0" in tab_text
+                    and "h=f.length>0?`${f}\\n${v}`:v" in tab_text
+                    and "children:h.length>0" in tab_text
                 )
+            ),
+            "outputTabAvoidsTemporalDeadZoneCollision": (
+                "v=u?.aggregatedOutput??d?.buffer??k??``,y=f.length>0" not in tab_text
             ),
             "fallbackLabelRemainsAvailable": (
                 "backgroundTerminals.defaultLabel" in thread_text

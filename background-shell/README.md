@@ -11,7 +11,7 @@
 - `openai/codex` 源码提交：`434535bddfaf405a032f57be3c1096dd25ff6312`（tag `rust-v0.155.0-alpha.9`）
 - Rust 工具链：`1.95.0-aarch64-apple-darwin`
 
-这一版适配 App build 9771：替换 `Contents/Resources/codex` native binary，并更新会话管理器、摘要栏、命令提取、后台终端输出和输出页打开器五个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
+这一版适配 App build 9771：替换 `Contents/Resources/codex` native binary，并更新会话管理器、摘要栏、命令提取、后台终端输出和输出页打开器五个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。输出页补丁会拒绝可能触发 JavaScript 暂时性死区、导致 `Tab content couldn't render` 的变量冲突版本，并可原位修复已经注入的冲突版本。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
 
 ## 主要文件
 
