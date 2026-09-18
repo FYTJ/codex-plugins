@@ -104,8 +104,8 @@ NATIVE_PATCH_MARKERS = (
     b"model_observed",
     b"dispatch_failed",
     b"guided-message-stuck",
-    b"busy_deferred_idle_turn",
-    b"idle_direct_turn",
+    b"active_turn_followup_queue",
+    b"idle_direct_turn_via_followup_router",
     b"live_process_reclaim_disabled",
 )
 
@@ -133,8 +133,8 @@ SCENARIO_TESTS = {
     "ctrl-b": ("codex-core", "user_shortcut_background_request_records_user_shortcut_source"),
     "summary-output": ("codex-core", "background_terminal_summary_exposes_command_title"),
     "stop-restart": ("codex-core", "background_terminal_native_terminate_controls_single_process"),
-    "busy-wakeup-30s": ("codex-core", "background_terminal_exit_wakeup_is_model_observed_then_delivered"),
-    "idle-wakeup-2min": ("codex-core", "background_terminal_idle_wakeup_uses_idle_direct_turn"),
+    "busy-wakeup-30s": ("codex-core", "background_wakeup_busy_dispatch_enters_native_followup_queue"),
+    "idle-wakeup-2min": ("codex-core", "background_terminal_idle_wakeup_uses_followup_router"),
 }
 
 FULL_VERIFY_SCENARIOS = (
@@ -1971,6 +1971,7 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         "codexThread": CODEX_RS / "core/src/codex_thread.rs",
         "sessionInject": CODEX_RS / "core/src/session/inject.rs",
         "sessionEvents": CODEX_RS / "core/src/session/mod.rs",
+        "sessionTurn": CODEX_RS / "core/src/session/turn.rs",
         "asyncWatcher": CODEX_RS / "core/src/unified_exec/async_watcher.rs",
         "unifiedExecMod": CODEX_RS / "core/src/unified_exec/mod.rs",
         "unifiedExecTests": CODEX_RS / "core/src/unified_exec/mod_tests.rs",
@@ -2001,16 +2002,19 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
                 "DispatchFailed",
             )
         ),
-        "busyDeferredPathUsesIdleTurn": "spawn_deferred_background_wakeup_idle_turn" in session_inject
-        and "busy_deferred_idle_turn" in session_inject,
-        "idleDirectPathUsesNativeGate": (
-            "try_start_turn_if_idle" in session_inject
-            or (
-                "start_background_wakeup_turn_if_idle" in session_inject
-                and "TurnInputMode::StartIfIdle" in session_inject
-            )
-        )
-        and "idle_direct_turn" in session_inject,
+        "busyPathUsesNativeFollowupQueue": "start_or_steer_background_wakeup" in session_inject
+        and "TurnInputMode::StartOrSteer" in session_inject
+        and "active_turn_followup_queue" in session_inject,
+        "idlePathUsesSameFollowupRouter": "start_or_steer_background_wakeup" in session_inject
+        and "TurnInputMode::StartOrSteer" in session_inject
+        and "idle_direct_turn_via_followup_router" in session_inject,
+        "noDeferredIdlePolling": "spawn_deferred_background_wakeup_idle_turn" not in session_inject
+        and "background_wakeup_deferred_idle_timeout" not in session_inject,
+        "wakeupWatchdogStartsAfterFollowupConsumption": (
+            "observe_background_wakeup_pending_input" in session_inject
+            and "observe_background_wakeup_pending_input" in texts["sessionTurn"]
+            and "background_terminal_wakeup_does_not_timeout_before_followup_is_consumed" in tests
+        ),
         "completionWatcherDispatchesWakeup": "dispatch_background_terminal_wakeup" in async_watcher
         and "background_wakeup_armed" in async_watcher,
         "wakeupPromptContainsRequiredFields": all(
@@ -2032,17 +2036,15 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         "backgroundTerminalWaitIs48Hours": (
             "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 172_800_000" in texts["unifiedExecMod"]
         ),
-        "deferredIdleTimeoutSeconds": 86_400
-        if "Duration::from_secs(86_400)" in session_inject
-        else None,
         "wakeupConsumptionRequiresTaskId": "text.contains(&wakeup.notification_id)" in session_inject
         and "text.contains(&wakeup.process_id)" not in session_inject
         and "text.contains(&wakeup.command)" not in session_inject,
         "outputEntryUsesCurrentCommandExecutionSchema": (
             "event_msg item_completed item.type=CommandExecution item.process_id={}" in session_inject
         ),
-        "busyScenarioTestPresent": "background_terminal_exit_wakeup_is_model_observed_then_delivered" in tests,
-        "idleScenarioTestPresent": "background_terminal_idle_wakeup_uses_idle_direct_turn" in tests,
+        "busyScenarioTestPresent": "background_wakeup_busy_dispatch_enters_native_followup_queue" in tests
+        and "background_terminal_exit_wakeup_uses_followup_queue_then_delivers" in tests,
+        "idleScenarioTestPresent": "background_terminal_idle_wakeup_uses_followup_router" in tests,
     }
     return {
         "ok": not missing_files and all(checks.values()),

@@ -401,10 +401,10 @@ index 7177740fea..0921526d0d 100644
          self.io.agent_status.clone()
      }
 diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
-index b2d0c05673..d2bfbf5ec7 100644
+index b2d0c05673..ab6a0beccb 100644
 --- a/codex-rs/core/src/session/inject.rs
 +++ b/codex-rs/core/src/session/inject.rs
-@@ -1,11 +1,30 @@
+@@ -1,11 +1,28 @@
  use super::TurnInput as PendingTurnInput;
  use super::session::Session;
  use super::turn_context::TurnContext;
@@ -416,15 +416,13 @@ index b2d0c05673..d2bfbf5ec7 100644
  use codex_history::ResponseItemEnvelope;
 +use codex_protocol::items::AgentMessageContent;
 +use codex_protocol::items::TurnItem;
-+use codex_protocol::models::ContentItem;
  use codex_protocol::models::ResponseItem;
  use codex_protocol::openai_models::ModelInfo;
 +use codex_protocol::protocol::EventMsg;
-+use codex_protocol::turn_input::NotSubmittedReason;
-+use codex_protocol::turn_input::TurnInput as SubmittedTurnInput;
 +use codex_protocol::turn_input::TurnInputMode;
 +use codex_protocol::turn_input::TurnInputRequest;
 +use codex_protocol::turn_input::TurnInputSubmission;
++use codex_protocol::user_input::UserInput;
 +use codex_utils_path_uri::LegacyAppPathString;
 +use std::sync::Arc;
 +use tokio::time::Duration;
@@ -435,7 +433,7 @@ index b2d0c05673..d2bfbf5ec7 100644
  
  impl Session {
      /// Returns the input if there is no active turn to inject into.
-@@ -171,6 +190,433 @@ impl Session {
+@@ -171,6 +188,336 @@ impl Session {
          self.record_conversation_items(turn_context, turn_context.model_info(), &items)
              .await;
      }
@@ -491,74 +489,45 @@ index b2d0c05673..d2bfbf5ec7 100644
 +        .await;
 +
 +        let prompt = format_background_wakeup_prompt(&wakeup);
-+        let item = ResponseItem::Message {
-+            id: None,
-+            role: "user".to_string(),
-+            content: vec![ContentItem::InputText { text: prompt }],
-+            phase: None,
-+            internal_chat_message_metadata_passthrough: None,
-+        };
-+        match self
-+            .start_background_wakeup_turn_if_idle(item.clone())
-+            .await
-+        {
++        match self.start_or_steer_background_wakeup(prompt).await {
 +            Ok(TurnInputSubmission::Started { .. }) => {
-+                let dispatch_path = "idle_direct_turn".to_string();
++                let dispatch_path = "idle_direct_turn_via_followup_router".to_string();
 +                self.update_background_wakeup(
 +                    &notification_id,
 +                    BackgroundWakeupPhase::RpcAccepted,
-+                    Some(dispatch_path.clone()),
-+                    None,
-+                    None,
-+                )
-+                .await;
-+                self.update_background_wakeup(
-+                    &notification_id,
-+                    BackgroundWakeupPhase::ModelObserved,
 +                    Some(dispatch_path),
 +                    None,
 +                    None,
 +                )
 +                .await;
-+                self.spawn_background_wakeup_watchdog(notification_id);
 +            }
-+            Ok(TurnInputSubmission::NotSubmitted {
-+                reason: NotSubmittedReason::NotIdle | NotSubmittedReason::PendingTriggerTurn,
-+            }) => {
-+                let dispatch_path = "busy_deferred_idle_turn_after_idle_race".to_string();
++            Ok(TurnInputSubmission::Steered { .. }) => {
++                let dispatch_path = "active_turn_followup_queue".to_string();
 +                self.update_background_wakeup(
 +                    &notification_id,
 +                    BackgroundWakeupPhase::RpcAccepted,
-+                    Some(dispatch_path.clone()),
++                    Some(dispatch_path),
 +                    None,
 +                    None,
 +                )
 +                .await;
-+                self.spawn_deferred_background_wakeup_idle_turn(
-+                    notification_id,
-+                    item,
-+                    dispatch_path,
-+                );
 +            }
 +            Ok(TurnInputSubmission::NotSubmitted { reason }) => {
 +                self.update_background_wakeup(
 +                    &notification_id,
 +                    BackgroundWakeupPhase::DispatchFailed,
 +                    None,
-+                    Some(format!("idle dispatch rejected: {reason:?}")),
++                    Some(format!("follow-up dispatch rejected: {reason:?}")),
 +                    None,
 +                )
 +                .await;
-+            }
-+            Ok(TurnInputSubmission::Steered { .. }) => {
-+                unreachable!("start-if-idle background wakeup cannot steer")
 +            }
 +            Err(error) => {
 +                self.update_background_wakeup(
 +                    &notification_id,
 +                    BackgroundWakeupPhase::DispatchFailed,
 +                    None,
-+                    Some(format!("idle dispatch failed: {error}")),
++                    Some(format!("follow-up dispatch failed: {error}")),
 +                    None,
 +                )
 +                .await;
@@ -566,14 +535,17 @@ index b2d0c05673..d2bfbf5ec7 100644
 +        }
 +    }
 +
-+    async fn start_background_wakeup_turn_if_idle(
++    async fn start_or_steer_background_wakeup(
 +        self: &Arc<Self>,
-+        item: ResponseItem,
++        prompt: String,
 +    ) -> codex_protocol::error::Result<TurnInputSubmission> {
 +        super::turn_input::handle(
 +            self,
-+            TurnInputRequest::new(SubmittedTurnInput::ResponseItem(item)),
-+            TurnInputMode::StartIfIdle,
++            TurnInputRequest::user_input(vec![UserInput::Text {
++                text: prompt,
++                text_elements: Vec::new(),
++            }]),
++            TurnInputMode::StartOrSteer,
 +            Uuid::new_v4().to_string(),
 +        )
 +        .await
@@ -581,6 +553,50 @@ index b2d0c05673..d2bfbf5ec7 100644
 +
 +    pub async fn list_background_terminal_wakeups(&self) -> Vec<BackgroundWakeupInfo> {
 +        self.background_terminal_wakeups.lock().await.clone()
++    }
++
++    pub(crate) async fn observe_background_wakeup_pending_input(
++        self: &Arc<Self>,
++        turn_context: &TurnContext,
++        input: &PendingTurnInput,
++    ) {
++        let PendingTurnInput::UserInput { content, .. } = input else {
++            return;
++        };
++        let text = content
++            .iter()
++            .filter_map(|input| match input {
++                UserInput::Text { text, .. } => Some(text.as_str()),
++                _ => None,
++            })
++            .collect::<Vec<_>>()
++            .join("\n");
++        if text.is_empty() {
++            return;
++        }
++        let matching_ids = {
++            let wakeups = self.background_terminal_wakeups.lock().await;
++            wakeups
++                .iter()
++                .filter(|wakeup| {
++                    wakeup.phase == BackgroundWakeupPhase::RpcAccepted
++                        && text.contains(&wakeup.notification_id)
++                })
++                .map(|wakeup| wakeup.notification_id.clone())
++                .collect::<Vec<_>>()
++        };
++
++        for notification_id in matching_ids {
++            self.update_background_wakeup(
++                &notification_id,
++                BackgroundWakeupPhase::ModelObserved,
++                None,
++                None,
++                Some(turn_context.sub_id.clone()),
++            )
++            .await;
++            self.spawn_background_wakeup_watchdog(notification_id);
++        }
 +    }
 +
 +    pub(crate) async fn observe_background_wakeup_model_event(
@@ -661,113 +677,6 @@ index b2d0c05673..d2bfbf5ec7 100644
 +        });
 +    }
 +
-+    fn spawn_deferred_background_wakeup_idle_turn(
-+        self: &Arc<Self>,
-+        notification_id: String,
-+        item: ResponseItem,
-+        dispatch_path: String,
-+    ) {
-+        let session = Arc::clone(self);
-+        let runtime = tokio::runtime::Handle::current();
-+        let thread_name = format!("codex-bg-wakeup-{}", notification_id);
-+        let notification_id_for_thread = notification_id.clone();
-+        let spawn_result = std::thread::Builder::new()
-+            .name(thread_name)
-+            .stack_size(8 * 1024 * 1024)
-+            .spawn(move || {
-+                runtime.block_on(async move {
-+                    let deadline =
-+                        tokio::time::Instant::now() + background_wakeup_deferred_idle_timeout();
-+                    loop {
-+                        if tokio::time::Instant::now() >= deadline {
-+                            session
-+                                .update_background_wakeup(
-+                                    &notification_id_for_thread,
-+                                    BackgroundWakeupPhase::DispatchFailed,
-+                                    None,
-+                                    Some(BACKGROUND_WAKEUP_STUCK_MESSAGE.to_string()),
-+                                    None,
-+                                )
-+                                .await;
-+                            return;
-+                        }
-+
-+                        match session
-+                            .start_background_wakeup_turn_if_idle(item.clone())
-+                            .await
-+                        {
-+                            Ok(TurnInputSubmission::Started { .. }) => {
-+                                session
-+                                    .update_background_wakeup(
-+                                        &notification_id_for_thread,
-+                                        BackgroundWakeupPhase::ModelObserved,
-+                                        Some(dispatch_path),
-+                                        None,
-+                                        None,
-+                                    )
-+                                    .await;
-+                                session.spawn_background_wakeup_watchdog(
-+                                    notification_id_for_thread,
-+                                );
-+                                return;
-+                            }
-+                            Ok(TurnInputSubmission::NotSubmitted {
-+                                reason:
-+                                    NotSubmittedReason::NotIdle
-+                                    | NotSubmittedReason::PendingTriggerTurn,
-+                            }) => {}
-+                            Ok(TurnInputSubmission::NotSubmitted { reason }) => {
-+                                session
-+                                    .update_background_wakeup(
-+                                        &notification_id_for_thread,
-+                                        BackgroundWakeupPhase::DispatchFailed,
-+                                        None,
-+                                        Some(format!(
-+                                            "deferred idle dispatch rejected: {reason:?}"
-+                                        )),
-+                                        None,
-+                                    )
-+                                    .await;
-+                                return;
-+                            }
-+                            Ok(TurnInputSubmission::Steered { .. }) => {
-+                                unreachable!("start-if-idle background wakeup cannot steer")
-+                            }
-+                            Err(error) => {
-+                                session
-+                                    .update_background_wakeup(
-+                                        &notification_id_for_thread,
-+                                        BackgroundWakeupPhase::DispatchFailed,
-+                                        None,
-+                                        Some(format!("deferred idle dispatch failed: {error}")),
-+                                        None,
-+                                    )
-+                                    .await;
-+                                return;
-+                            }
-+                        }
-+
-+                        tokio::time::sleep(Duration::from_millis(250)).await;
-+                    }
-+                });
-+            });
-+
-+        if let Err(error) = spawn_result {
-+            let session = Arc::clone(self);
-+            tokio::spawn(async move {
-+                session
-+                    .update_background_wakeup(
-+                        &notification_id,
-+                        BackgroundWakeupPhase::DispatchFailed,
-+                        None,
-+                        Some(format!("deferred idle thread spawn failed: {error}")),
-+                        None,
-+                    )
-+                    .await;
-+            });
-+        }
-+    }
-+
 +    async fn update_background_wakeup_if_still_pending_delivery(&self, notification_id: &str) {
 +        let mut wakeups = self.background_terminal_wakeups.lock().await;
 +        let Some(wakeup) = wakeups
@@ -791,14 +700,6 @@ index b2d0c05673..d2bfbf5ec7 100644
 +        Duration::from_millis(200)
 +    } else {
 +        Duration::from_secs(120)
-+    }
-+}
-+
-+fn background_wakeup_deferred_idle_timeout() -> Duration {
-+    if cfg!(test) {
-+        Duration::from_secs(2)
-+    } else {
-+        Duration::from_secs(86_400)
 +    }
 +}
 +
@@ -934,6 +835,19 @@ index aa828752a3..d296c0c67f 100644
          services,
          git_enrichment_policy: GitEnrichmentPolicy::Fresh,
          fork_persistence: ForkPersistence::Copied,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 5d5fa3a0aa..873940e2d1 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -843,6 +843,8 @@ pub(crate) async fn run_hooks_and_record_inputs(
+                 persist_context,
+             )
+             .await;
++            sess.observe_background_wakeup_pending_input(turn_context, input_item)
++                .await;
+         }
+     }
+     blocked_input && !accepted_user_input
 diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
 index 8ac1030269..8587f679d3 100644
 --- a/codex-rs/core/src/tasks/mod.rs
@@ -1446,7 +1360,7 @@ index 8dc8f359d4..4d05d3952b 100644
      environment_id: String,
      permissions: TerminalPermissions,
 diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
-index a6f488689b..00635bfecc 100644
+index a6f488689b..f361fa9c4a 100644
 --- a/codex-rs/core/src/unified_exec/mod_tests.rs
 +++ b/codex-rs/core/src/unified_exec/mod_tests.rs
 @@ -1,5 +1,6 @@
@@ -1456,24 +1370,58 @@ index a6f488689b..00635bfecc 100644
  use crate::environment_selection::TurnEnvironmentState;
  use crate::exec::ExecCapturePolicy;
  use crate::exec::ExecExpiration;
-@@ -7,6 +8,7 @@ use crate::sandboxing::ExecRequest;
+@@ -7,6 +8,9 @@ use crate::sandboxing::ExecRequest;
  use crate::session::session::Session;
  use crate::session::tests::make_session_and_context;
  use crate::session::turn_context::TurnContext;
-+use crate::state::ActiveTurn;
++use crate::state::TaskKind;
++use crate::tasks::SessionTask;
++use crate::tasks::SessionTaskResult;
  use crate::tools::context::ExecCommandToolOutput;
  use crate::unified_exec::WriteStdinRequest;
  use codex_exec_server::ExecProcess;
-@@ -18,6 +20,8 @@ use codex_exec_server::ReadResponse;
+@@ -18,6 +22,9 @@ use codex_exec_server::ReadResponse;
  use codex_exec_server::StartedExecProcess;
  use codex_exec_server::WriteResponse;
  use codex_exec_server::WriteStatus;
 +use codex_protocol::protocol::AgentMessageEvent;
 +use codex_protocol::protocol::EventMsg;
++use codex_protocol::protocol::TurnAbortReason;
  use codex_sandboxing::SandboxType;
  use codex_utils_absolute_path::AbsolutePathBuf;
  use codex_utils_output_truncation::TruncationPolicy;
-@@ -40,6 +44,19 @@ async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+@@ -34,12 +41,50 @@ use tokio::sync::Notify;
+ use tokio::sync::watch;
+ use tokio::time::Duration;
+ use tokio::time::Instant;
++use tokio_util::sync::CancellationToken;
++
++#[derive(Clone, Copy)]
++struct NeverEndingWakeupTask;
++
++impl SessionTask for NeverEndingWakeupTask {
++    fn kind(&self) -> TaskKind {
++        TaskKind::Regular
++    }
++
++    fn span_name(&self) -> &'static str {
++        "session_task.background_wakeup_test"
++    }
++
++    async fn run(
++        self: Arc<Self>,
++        _session: Arc<Session>,
++        _ctx: Arc<TurnContext>,
++        _input: Vec<crate::session::TurnInput>,
++        cancellation_token: CancellationToken,
++    ) -> SessionTaskResult {
++        cancellation_token.cancelled().await;
++        Ok(None)
++    }
++}
+ 
+ async fn test_session_and_turn() -> (Arc<Session>, Arc<TurnContext>) {
+     let (session, turn) = make_session_and_context().await;
      (Arc::new(session), Arc::new(turn))
  }
  
@@ -1493,7 +1441,7 @@ index a6f488689b..00635bfecc 100644
  async fn exec_command(
      session: &Arc<Session>,
      turn: &Arc<TurnContext>,
-@@ -140,7 +157,13 @@ async fn exec_command_with_tty(
+@@ -140,7 +185,13 @@ async fn exec_command_with_tty(
              process_id,
              cwd: cwd.clone().into(),
              initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -1507,7 +1455,7 @@ index a6f488689b..00635bfecc 100644
              tty,
              environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
              permissions: TerminalPermissions::for_launch(
-@@ -168,6 +191,7 @@ async fn exec_command_with_tty(
+@@ -168,6 +219,7 @@ async fn exec_command_with_tty(
          process.output_handles(),
          Some(session.subscribe_elicitation_pause_state()),
          deadline,
@@ -1515,7 +1463,7 @@ index a6f488689b..00635bfecc 100644
      )
      .await;
      let wall_time = Instant::now().saturating_duration_since(started_at);
-@@ -213,6 +237,43 @@ async fn exec_command_with_tty(
+@@ -213,6 +265,43 @@ async fn exec_command_with_tty(
      })
  }
  
@@ -1559,7 +1507,7 @@ index a6f488689b..00635bfecc 100644
  #[derive(Debug)]
  struct TestSpawnLifecycle {
      inherited_fds: Vec<i32>,
-@@ -346,23 +407,13 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
+@@ -346,23 +435,13 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
      skip_if_sandbox!(Ok(()));
  
      let (session, turn) = test_session_and_turn().await;
@@ -1584,7 +1532,7 @@ index a6f488689b..00635bfecc 100644
  
      write_stdin(
          &session,
-@@ -395,6 +446,566 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
+@@ -395,6 +474,623 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
      Ok(())
  }
  
@@ -1711,7 +1659,82 @@ index a6f488689b..00635bfecc 100644
 +}
 +
 +#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-+async fn background_terminal_exit_wakeup_is_model_observed_then_delivered() -> anyhow::Result<()> {
++async fn background_wakeup_busy_dispatch_enters_native_followup_queue() -> anyhow::Result<()> {
++    let (session, turn) = test_session_and_turn().await;
++    session
++        .spawn_task(Arc::clone(&turn), Vec::new(), NeverEndingWakeupTask)
++        .await;
++
++    session
++        .dispatch_background_terminal_wakeup(crate::codex_thread::BackgroundWakeupRequest {
++            item_id: "call-followup-wakeup".to_string(),
++            process_id: 31337,
++            command: "sleep 1; echo followup-observed".to_string(),
++            #[allow(deprecated)]
++            cwd: turn.cwd.clone().into(),
++            exit_code: 0,
++            output: "followup-observed".to_string(),
++        })
++        .await;
++
++    let wakeup = session
++        .list_background_terminal_wakeups()
++        .await
++        .into_iter()
++        .next()
++        .expect("wakeup record");
++    assert_eq!(wakeup.phase, BackgroundWakeupPhase::RpcAccepted);
++    assert_eq!(
++        wakeup.dispatch_path.as_deref(),
++        Some("active_turn_followup_queue")
++    );
++
++    let pending_input = session
++        .input_queue
++        .get_pending_input(&session.active_turn)
++        .await
++        .0;
++    assert_eq!(pending_input.len(), 1);
++    let crate::session::TurnInput::UserInput { content, .. } = &pending_input[0] else {
++        panic!("background wakeup should use the native user follow-up queue");
++    };
++    assert!(content.iter().any(|input| matches!(
++        input,
++        codex_protocol::user_input::UserInput::Text { text, .. }
++            if text.contains(&wakeup.notification_id)
++                && text.contains("Process id: 31337")
++                && text.contains("Command: sleep 1; echo followup-observed")
++    )));
++    session
++        .observe_background_wakeup_pending_input(turn.as_ref(), &pending_input[0])
++        .await;
++    assert_eq!(
++        session.list_background_terminal_wakeups().await[0].phase,
++        BackgroundWakeupPhase::ModelObserved
++    );
++
++    session
++        .send_event(
++            turn.as_ref(),
++            EventMsg::AgentMessage(AgentMessageEvent {
++                message: format!("Handled {}", wakeup.notification_id),
++                phase: None,
++                memory_citation: None,
++                delivery: None,
++                questions: None,
++            }),
++        )
++        .await;
++    assert_eq!(
++        session.list_background_terminal_wakeups().await[0].phase,
++        BackgroundWakeupPhase::Delivered
++    );
++    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
++    Ok(())
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn background_terminal_exit_wakeup_uses_followup_queue_then_delivers() -> anyhow::Result<()> {
 +    skip_if_sandbox!(Ok(()));
 +
 +    let (session, turn) = test_session_and_turn().await;
@@ -1730,10 +1753,9 @@ index a6f488689b..00635bfecc 100644
 +
 +    let output = manager.exec_command(request, &context).await?;
 +    assert_eq!(output.process_id, Some(process_id));
-+    {
-+        let mut active_turn = session.active_turn.lock().await;
-+        *active_turn = Some(ActiveTurn::default());
-+    }
++    session
++        .spawn_task(Arc::clone(&turn), Vec::new(), NeverEndingWakeupTask)
++        .await;
 +
 +    tokio::time::timeout(Duration::from_secs(2), async {
 +        loop {
@@ -1773,7 +1795,7 @@ index a6f488689b..00635bfecc 100644
 +    );
 +    assert_eq!(
 +        wakeup.dispatch_path.as_deref(),
-+        Some("busy_deferred_idle_turn_after_idle_race")
++        Some("active_turn_followup_queue")
 +    );
 +    assert!(
 +        wakeup.output_summary.contains("background-wakeup-done"),
@@ -1781,54 +1803,20 @@ index a6f488689b..00635bfecc 100644
 +        wakeup.output_summary
 +    );
 +
-+    session
-+        .send_event(
-+            turn.as_ref(),
-+            EventMsg::AgentMessage(AgentMessageEvent {
-+                message: format!(
-+                    "Observed process {} running command {}",
-+                    wakeup.process_id, wakeup.command
-+                ),
-+                phase: None,
-+                memory_citation: None,
-+                delivery: None,
-+                questions: None,
-+            }),
-+        )
-+        .await;
-+    let still_pending = session
-+        .list_background_terminal_wakeups()
++    let pending_input = session
++        .input_queue
++        .get_pending_input(&session.active_turn)
 +        .await
-+        .into_iter()
-+        .next()
-+        .expect("wakeup should remain pending after a PID and command-only message");
-+    assert_eq!(still_pending.phase, BackgroundWakeupPhase::RpcAccepted);
-+
-+    {
-+        let mut active_turn = session.active_turn.lock().await;
-+        *active_turn = None;
-+    }
-+
-+    tokio::time::timeout(Duration::from_secs(2), async {
-+        loop {
-+            let wakeups = session.list_background_terminal_wakeups().await;
-+            if wakeups
-+                .first()
-+                .is_some_and(|wakeup| wakeup.phase == BackgroundWakeupPhase::ModelObserved)
-+            {
-+                break;
-+            }
-+            tokio::time::sleep(Duration::from_millis(20)).await;
-+        }
-+    })
-+    .await
-+    .expect(
-+        "deferred background wakeup should start an idle model turn after the active turn ends",
-+    );
-+    assert!(
-+        session.active_turn.lock().await.is_some(),
-+        "deferred busy wakeup should reserve and start a follow-up turn"
-+    );
++        .0;
++    assert_eq!(pending_input.len(), 1);
++    let crate::session::TurnInput::UserInput { content, .. } = &pending_input[0] else {
++        panic!("background wakeup should use the native user follow-up queue");
++    };
++    assert!(content.iter().any(|input| matches!(
++        input,
++        codex_protocol::user_input::UserInput::Text { text, .. }
++            if text.contains(&wakeup.notification_id)
++    )));
 +
 +    session
 +        .send_event(
@@ -1854,17 +1842,18 @@ index a6f488689b..00635bfecc 100644
 +        delivered.observed_turn_id.as_deref(),
 +        Some(turn.sub_id.as_str())
 +    );
++    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 +
 +    Ok(())
 +}
 +
 +#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-+async fn background_terminal_wakeup_watchdog_marks_guided_message_stuck() -> anyhow::Result<()> {
++async fn background_terminal_wakeup_does_not_timeout_before_followup_is_consumed()
++-> anyhow::Result<()> {
 +    let (session, turn) = test_session_and_turn().await;
-+    {
-+        let mut active_turn = session.active_turn.lock().await;
-+        *active_turn = Some(ActiveTurn::default());
-+    }
++    session
++        .spawn_task(Arc::clone(&turn), Vec::new(), NeverEndingWakeupTask)
++        .await;
 +
 +    session
 +        .dispatch_background_terminal_wakeup(crate::codex_thread::BackgroundWakeupRequest {
@@ -1878,24 +1867,22 @@ index a6f488689b..00635bfecc 100644
 +        })
 +        .await;
 +
-+    tokio::time::sleep(Duration::from_millis(2300)).await;
++    tokio::time::sleep(Duration::from_millis(300)).await;
 +    let wakeup = session
 +        .list_background_terminal_wakeups()
 +        .await
 +        .into_iter()
 +        .next()
 +        .expect("wakeup record");
-+    assert_eq!(wakeup.phase, BackgroundWakeupPhase::DispatchFailed);
-+    assert_eq!(
-+        wakeup.dispatch_error.as_deref(),
-+        Some("guided-message-stuck")
-+    );
++    assert_eq!(wakeup.phase, BackgroundWakeupPhase::RpcAccepted);
++    assert_eq!(wakeup.dispatch_error, None);
++    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
 +
 +    Ok(())
 +}
 +
 +#[test]
-+fn background_terminal_idle_wakeup_uses_idle_direct_turn() -> anyhow::Result<()> {
++fn background_terminal_idle_wakeup_uses_followup_router() -> anyhow::Result<()> {
 +    let runtime = tokio::runtime::Builder::new_multi_thread()
 +        .worker_threads(2)
 +        .thread_stack_size(codex_async_utils::THREAD_STACK_SIZE_BYTES)
@@ -1916,6 +1903,21 @@ index a6f488689b..00635bfecc 100644
 +            })
 +            .await;
 +
++        tokio::time::timeout(Duration::from_secs(2), async {
++            loop {
++                if session
++                    .list_background_terminal_wakeups()
++                    .await
++                    .first()
++                    .is_some_and(|wakeup| wakeup.phase == BackgroundWakeupPhase::ModelObserved)
++                {
++                    break;
++                }
++                tokio::task::yield_now().await;
++            }
++        })
++        .await
++        .expect("idle wakeup should be observed by the newly started model turn");
 +        let wakeup = session
 +            .list_background_terminal_wakeups()
 +            .await
@@ -1923,7 +1925,10 @@ index a6f488689b..00635bfecc 100644
 +            .next()
 +            .expect("wakeup record");
 +        assert_eq!(wakeup.phase, BackgroundWakeupPhase::ModelObserved);
-+        assert_eq!(wakeup.dispatch_path.as_deref(), Some("idle_direct_turn"));
++        assert_eq!(
++            wakeup.dispatch_path.as_deref(),
++            Some("idle_direct_turn_via_followup_router")
++        );
 +        assert!(
 +            session.active_turn.lock().await.is_some(),
 +            "idle wakeup should reserve and start a turn through Codex native idle gate"
@@ -2151,7 +2156,7 @@ index a6f488689b..00635bfecc 100644
  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
  async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
      skip_if_sandbox!(Ok(()));
-@@ -614,7 +1225,13 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
+@@ -614,7 +1310,13 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
              process_id,
              cwd: cwd.into(),
              initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -2165,7 +2170,7 @@ index a6f488689b..00635bfecc 100644
              tty: true,
              environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
              permissions: TerminalPermissions::for_launch(
-@@ -697,7 +1314,13 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
+@@ -697,7 +1399,13 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
              process_id,
              cwd: cwd.into(),
              initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2179,7 +2184,7 @@ index a6f488689b..00635bfecc 100644
              tty: true,
              environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
              permissions: TerminalPermissions::for_launch(
-@@ -832,6 +1455,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
+@@ -832,6 +1540,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
          process.output_handles(),
          /*pause_state*/ None,
          Instant::now() + Duration::from_millis(2_500),

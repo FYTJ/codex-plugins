@@ -97,7 +97,8 @@ git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-
 - App 内置摘要和后台终端页使用 native `thread/backgroundTerminals/*` 接口展示、清理和控制任务。
 - 摘要栏优先显示完整原始命令；后台终端详情第一行显示完整命令，从下一行开始显示 stdout/stderr。
 - stop/restart 使用 native process id，不依赖会话历史推断残留进程。
-- 后台任务完成后支持 busy/idle 唤醒，并以模型消费任务 ID 作为 delivered 判定。
+- 后台任务完成后的唤醒与用户 follow-up 使用同一 `StartOrSteer` 路径：活动 regular turn 中进入原生 `UserInput` 队列，在当前工具调用/工具批次结束后的下一次模型采样中消费；空闲时直接启动新 turn，不等待整个会话结束。
+- wakeup watchdog 只在 follow-up 已从队列取出并写入模型输入后启动；排队等待当前工具调用期间不会被误判为 `guided-message-stuck`。模型响应仍须包含唯一任务 ID，作为 delivered 判定。
 - 完成通知携带命令、工作目录、退出码、输出路径和输出摘要；非零退出与 stderr 会保留。
 - live process reclaim 被禁用，避免恢复会话时错误接管仍在运行的终端。
 
