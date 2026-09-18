@@ -4,18 +4,18 @@
 
 ## 当前兼容基线
 
-- Codex App：`26.911.61220 (9647)`
+- Codex App：`26.915.31029 (9771)`
 - 默认安装路径：`/Applications/ChatGPT.app`
 - Bundle ID：`com.openai.codex`
-- bundled CLI：`codex-cli 0.155.0-alpha.2.6`
-- `openai/codex` 源码提交：`bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6`（tag `rust-v0.155.0-alpha.2.6`）
+- bundled CLI：`codex-cli 0.155.0-alpha.9`
+- `openai/codex` 源码提交：`434535bddfaf405a032f57be3c1096dd25ff6312`（tag `rust-v0.155.0-alpha.9`）
 - Rust 工具链：`1.95.0-aarch64-apple-darwin`
 
-这一版适配 App build 9647：替换 `Contents/Resources/codex` native binary，并更新新版拆分后的命令提取与后台终端输出两个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
+这一版适配 App build 9771：替换 `Contents/Resources/codex` native binary，并更新会话管理器、摘要栏、命令提取、后台终端输出和输出页打开器五个 ASAR bundle。摘要栏使用完整命令作为名称，详情窗口第一行显示完整命令、后续显示输出。安装前后会验证 ASAR integrity、native 标记、CLI 版本、JavaScript 语法和 codesign。脚本不会停止或重启 Codex App；如果 App 正在运行，当前进程继续使用旧 inode，新 binary 和 UI bundle 在用户下次手动完整重启 App 后生效。
 
 ## 主要文件
 
-- `scripts/codex_background_terminal_patch_current.py`：build 9647 的主入口；识别新版拆分后的后台终端 UI，并以原子替换方式安装 native hook 与命令 UI 补丁。
+- `scripts/codex_background_terminal_patch_current.py`：build 9771 的主入口；识别新版拆分后的后台终端 UI，并以原子替换方式安装 native hook 与命令 UI 补丁。
 - `scripts/codex_background_terminal_patch_app.py`：fail-closed 基础控制器，负责源码校验、构建、备份、签名、状态和场景验证。
 - `scripts/openai-codex-background-shell.patch`：基于上述固定 `openai/codex` 提交生成的 Rust/native patch。
 - `bin/codex-background-shell-patch-current`：调用当前 build 兼容 wrapper 的命令入口。
@@ -44,10 +44,10 @@ chmod +x "$HOME/.codex/plugins/background-shell/bin/codex-background-shell-patch
 ```bash
 cd "$HOME/.codex/plugins/background-shell/scripts"
 mkdir -p external-sources
-git clone https://github.com/openai/codex external-sources/openai-codex-0.155.0-alpha.2.6
-git -C external-sources/openai-codex-0.155.0-alpha.2.6 checkout bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6
-git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply --check ../../openai-codex-background-shell.patch
-git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-background-shell.patch
+git clone https://github.com/openai/codex external-sources/openai-codex-0.155.0-alpha.9
+git -C external-sources/openai-codex-0.155.0-alpha.9 checkout 434535bddfaf405a032f57be3c1096dd25ff6312
+git -C external-sources/openai-codex-0.155.0-alpha.9 apply --check ../../openai-codex-background-shell.patch
+git -C external-sources/openai-codex-0.155.0-alpha.9 apply ../../openai-codex-background-shell.patch
 ```
 
 控制器固定使用：
@@ -57,7 +57,7 @@ git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-
 ~/.rustup/toolchains/1.95.0-aarch64-apple-darwin/bin/rustc
 ```
 
-源码目录必须保持在提交 `bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6`，且工作区差异（除 `Cargo.lock`）必须与随附 patch 完全一致；控制器会 fail closed 校验这两项。
+源码目录必须保持在提交 `434535bddfaf405a032f57be3c1096dd25ff6312`，且工作区差异（除 `Cargo.lock`）必须与随附 patch 完全一致；控制器会 fail closed 校验这两项。
 
 ## 常用命令
 
@@ -104,18 +104,18 @@ git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-
 
 ## 已验证链路
 
-build 9647 上已经验证：
+build 9771 上已经验证：
 
 - `cargo check -p codex-core -p codex-app-server-protocol -p codex-app-server`
-- `cargo test -p codex-core background --lib`（14/14）
+- `cargo test -p codex-core background_ --lib`（15/15）
 - `cargo test -p codex-app-server background_terminal --lib`（4/4）
 - release binary 构建、版本检查、native 标记、ASAR integrity 和 `codesign --verify --deep --strict`
-- 两个目标 ASAR bundle 的离线重打包、幂等应用、Node 语法检查和安装后扫描
-- build 9647 的真实后台成功/失败通知验证需在用户手动完整重启 Codex App 后执行
+- 五个目标 ASAR bundle 的离线重打包、幂等应用、Node 语法检查和安装后扫描
+- build 9771 的真实后台成功/失败通知验证需在用户手动完整重启 Codex App 后执行
 
 ## 不进入仓库的内容
 
-- `external-sources/openai-codex-0.155.0-alpha.2.6/` checkout
+- `external-sources/openai-codex-0.155.0-alpha.9/` checkout
 - `codex-rs/target/` 构建产物
 - `background-terminal/reports/` 验证报告、截图和备份
 - Codex App bundle、DMG、profile、会话、认证和本机配置

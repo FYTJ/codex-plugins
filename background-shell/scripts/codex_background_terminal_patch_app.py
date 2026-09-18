@@ -42,16 +42,16 @@ DOWNLOADS = HOME / "Downloads"
 TRASH = HOME / ".Trash"
 REPORT_ROOT = BACKGROUND_TERMINAL_ROOT / "reports"
 LAUNCH_USER_DATA_DIR = HOME / ".codex" / "tmp" / "codex-usercopy-profile"
-UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-0.155.0-alpha.2.6"
+UPSTREAM_CODEX_REPO = RESOURCE_ROOT / "external-sources" / "openai-codex-0.155.0-alpha.9"
 CODEX_RS = UPSTREAM_CODEX_REPO / "codex-rs"
-EXPECTED_SOURCE_HEAD = "bf6f0a4ec97919bf697cdc532e7b8af4ec482fc6"
-EXPECTED_CODEX_VERSION = "codex-cli 0.155.0-alpha.2.6"
+EXPECTED_SOURCE_HEAD = "434535bddfaf405a032f57be3c1096dd25ff6312"
+EXPECTED_CODEX_VERSION = "codex-cli 0.155.0-alpha.9"
 RUST_TOOLCHAIN = HOME / ".rustup" / "toolchains" / "1.95.0-aarch64-apple-darwin" / "bin"
 RUSTC = RUST_TOOLCHAIN / "rustc"
 CARGO = RUST_TOOLCHAIN / "cargo"
 BUILT_CODEX_BINARY = CODEX_RS / "target" / "release" / "codex"
 NATIVE_PATCH_FILE = Path(__file__).with_name("openai-codex-background-shell.patch")
-CHANGE_ID = "change-20260916-codex-0155-0-alpha-2-6-build-9647"
+CHANGE_ID = "change-20260918-codex-0155-0-alpha-9-build-9771-followup-queue"
 APP_BUNDLE_ID = "com.openai.codex"
 OPENAI_TEAM_ID = "2DC432GLL2"
 AUTO_BACKGROUND_THRESHOLD_SECONDS = 300
@@ -681,8 +681,8 @@ def self_test() -> dict[str, Any]:
     check("default patch target is the official system app", is_system_app(DEFAULT_USER_APP))
     check("source head is pinned to the supported app release", len(EXPECTED_SOURCE_HEAD) == 40)
     check(
-        "Codex version is pinned to 0.155.0-alpha.2.6",
-        EXPECTED_CODEX_VERSION == "codex-cli 0.155.0-alpha.2.6",
+        "Codex version is pinned to 0.155.0-alpha.9",
+        EXPECTED_CODEX_VERSION == "codex-cli 0.155.0-alpha.9",
     )
     check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
     check(

@@ -14,7 +14,7 @@ import codex_background_terminal_patch_app as m
 ORIG_APPLY_APP_CONTROL_BRIDGE_PATCH = m.apply_app_control_bridge_patch
 ORIG_ANALYZE_APP = m.analyze_app
 ORIG_STATUS_REPORT = m.status_report
-SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.155.0-alpha.2.6"}
+SUPPORTED_UNPATCHED_CODEX_VERSIONS = {"codex-cli 0.155.0-alpha.9"}
 SUPPORTED_PREVIOUS_PATCHED_CODEX_VERSIONS = {
     "codex-cli 0.150.0-alpha.12.2",
     "codex-cli 0.148.0-alpha.15",
@@ -95,7 +95,96 @@ def action_fn(text: str) -> str:
     return "_n"
 
 
+def apply_ctrl_b_ui_patch_9771(
+    asar_path: Path,
+    header: dict[str, Any],
+    data_offset: int,
+) -> list[dict[str, Any]] | None:
+    try:
+        manager_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="ctrl-b-manager-path-9771",
+            include_all=(
+                "async cleanBackgroundTerminals(e,t)",
+                "get cleanBackgroundTerminals(){return",
+                "archiveContext(e){",
+            ),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        return None
+
+    original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), manager_rel),
+        m.read_asar_file(asar_path, header, data_offset, manager_rel),
+    )
+    text = original.decode("utf-8")
+    manager_before = ")},!1)}archiveContext(e){"
+    manager_after = (
+        ")},!1)}async backgroundActiveTerminal(e){let t=this.getStreamRole(e);"
+        "if(t?.role===`follower`)throw Error(PAt);let n=this.conversations.get(e);"
+        f"await this.sendRequest(`{m.CTRL_B_NATIVE_METHOD}`,{{threadId:n?.id??e,source:`user_shortcut`}})"
+        "}async listBackgroundTerminals(e,t,n){let r=this.getStreamRole(e);"
+        "if(r?.role===`follower`)throw Error(PAt);let i=this.conversations.get(e);"
+        f"return await this.sendRequest(`{m.LIST_BG_NATIVE_METHOD}`,{{threadId:i?.id??e,cursor:t??null,limit:n??50}})"
+        "}async terminateBackgroundTerminal(e,t){let n=this.getStreamRole(e);"
+        "if(n?.role===`follower`)throw Error(PAt);let r=this.conversations.get(e);"
+        f"return await this.sendRequest(`{m.TERMINATE_BG_NATIVE_METHOD}`,{{threadId:r?.id??e,processId:t}})"
+        "}archiveContext(e){"
+    )
+    proxy_before = (
+        "get cleanBackgroundTerminals(){return(...e)=>this.#e().cleanBackgroundTerminals(...e)}"
+        "get forkConversationFromLatest(){"
+    )
+    proxy_after = (
+        "get cleanBackgroundTerminals(){return(...e)=>this.#e().cleanBackgroundTerminals(...e)}"
+        "get backgroundActiveTerminal(){return(...e)=>this.#e().backgroundActiveTerminal(...e)}"
+        "get listBackgroundTerminals(){return(...e)=>this.#e().listBackgroundTerminals(...e)}"
+        "get terminateBackgroundTerminal(){return(...e)=>this.#e().terminateBackgroundTerminal(...e)}"
+        "get forkConversationFromLatest(){"
+    )
+    text, manager_step = m.replace_text_variants_in_text(
+        text,
+        manager_rel,
+        [(manager_before, manager_after)],
+        step_name="ctrl-b-conversation-manager-method-9771",
+    )
+    text, proxy_step = m.replace_text_variants_in_text(
+        text,
+        manager_rel,
+        [(proxy_before, proxy_after)],
+        step_name="background-terminal-manager-proxy-9771",
+    )
+    updated = text.encode("utf-8")
+    PENDING_ASAR_CONTENT[(str(asar_path), manager_rel)] = updated
+    syntax_check = m.javascript_syntax_check(manager_rel, text)
+    if syntax_check.get("ok") is not True:
+        raise m.ControllerError(
+            "javascript-syntax-check-failed",
+            "Patched build 9771 conversation manager bundle failed JavaScript syntax validation.",
+            details=syntax_check,
+        )
+    return [{
+        "name": "ctrl-b-manager-and-native-terminal-api-9771",
+        "target": manager_rel,
+        "beforeSha256": hashlib.sha256(original).hexdigest(),
+        "afterSha256": hashlib.sha256(updated).hexdigest(),
+        "beforeSize": len(original),
+        "afterSize": len(updated),
+        "alreadyApplied": manager_step["alreadyApplied"] and proxy_step["alreadyApplied"],
+        "substeps": [manager_step, proxy_step],
+        "syntaxCheck": syntax_check,
+        "content": updated,
+    }]
+
+
 def apply_ctrl_b_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> list[dict[str, Any]]:
+    build_9771 = apply_ctrl_b_ui_patch_9771(asar_path, header, data_offset)
+    if build_9771 is not None:
+        return build_9771
+
     manager_clean_before = ")},!1)}getArchiveConversationContext(){"
     manager_after = (
         ")},!1)}async backgroundActiveTerminal(e){let t=this.getStreamRole(e);"
@@ -833,17 +922,115 @@ def apply_task005_ui_patch_5813(
     }]
 
 
+def apply_task005_ui_patch_9771(
+    asar_path: Path,
+    header: dict[str, Any],
+    data_offset: int,
+    local_thread_rel: str,
+) -> list[dict[str, Any]]:
+    original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), local_thread_rel),
+        m.read_asar_file(asar_path, header, data_offset, local_thread_rel),
+    )
+    text = original.decode("utf-8")
+    summary_before = (
+        "function Bb(e){let t=(0,Vb.c)(19),{onOpenBackgroundAgent:n}=e,r=$p(Tc),"
+        "i=r.value.routeKind===`local-thread`?r.value.conversationId:null,a=Z(Rb,i)??[],"
+        "o=Ci()===ji,s=ie(),c;"
+    )
+    summary_after = (
+        "function Bb(e){let t=(0,Vb.c)(19),{onOpenBackgroundAgent:n}=e,r=$p(Tc),"
+        "i=r.value.routeKind===`local-thread`?r.value.conversationId:null,"
+        "[a,A]=(0,wb.useState)([]),o=Ci()===ji,s=ie(),c;"
+        "(0,wb.useEffect)(()=>{if(i==null){A([]);return}let e=!1,t=async()=>{try{"
+        "let n=await Cr(r,r.get(bf)).listBackgroundTerminals(i,null,50);if(e)return;"
+        "let o=Array.isArray(n?.data)?n.data:[];A(o.map(e=>({"
+        "id:String(e.itemId??e.id??e.processId??`${i}:${e.command??``}`),"
+        "command:String(e.command??``),cwd:e.cwd??null,processId:e.processId??null,"
+        "source:String(e.source??``),status:`running`,output:String(e.output??``),"
+        "aggregatedOutput:String(e.output??``),startedAtMs:e.startedAtMs??null,"
+        "turnId:e.turnId??null,workspaceRoot:e.workspaceRoot??null})))"
+        "}catch{e||A([])}};t();let n=setInterval(t,1e3);"
+        "return()=>{e=!0,clearInterval(n)}},[r,i]);"
+        "(0,wb.useEffect)(()=>{let e=e=>{e.type===`keydown`&&e.key.toLowerCase()===`b`&&"
+        "e.ctrlKey===!0&&e.metaKey!==!0&&e.altKey!==!0&&e.shiftKey!==!0&&i!=null&&"
+        "(e.preventDefault(),e.stopPropagation(),"
+        "Cr(r,r.get(bf)).backgroundActiveTerminal(i).catch(()=>{}))};"
+        "return window.addEventListener(`keydown`,e,!0),"
+        "()=>window.removeEventListener(`keydown`,e,!0)},[r,i]);"
+    )
+    stop_before = (
+        "h=e=>{i!=null&&d==null&&(f(e.id),Cr(l,l.get(bf)).cleanBackgroundTerminals(i)"
+        ".catch(c).finally(()=>f(null)))}"
+    )
+    stop_after = (
+        "h=e=>{if(i!=null&&d==null){f(e.id);let t=Cr(l,l.get(bf)),n=e.processId;"
+        "(n!=null?t.terminateBackgroundTerminal(i,n):t.cleanBackgroundTerminals(i))"
+        ".catch(c).finally(()=>f(null))}}"
+    )
+    label_before = (
+        "defaultMessage:`Stop all background terminals`,description:"
+        "`Aria label for button that stops all background terminals from the thread summary panel`"
+    )
+    label_after = (
+        "defaultMessage:`Stop background terminal`,description:"
+        "`Aria label for button that stops one background terminal from the thread summary panel`"
+    )
+    substeps: list[dict[str, Any]] = []
+    for step_name, variants in (
+        ("task005-native-terminal-polling-and-ctrl-b-9771", [(summary_before, summary_after)]),
+        ("task005-summary-stop-single-native-terminal-9771", [(stop_before, stop_after)]),
+        ("task005-summary-stop-single-label-9771", [(label_before, label_after)]),
+    ):
+        text, step = m.replace_text_variants_in_text(
+            text,
+            local_thread_rel,
+            variants,
+            step_name=step_name,
+        )
+        substeps.append(step)
+
+    updated = text.encode("utf-8")
+    PENDING_ASAR_CONTENT[(str(asar_path), local_thread_rel)] = updated
+    syntax_check = m.javascript_syntax_check(local_thread_rel, text)
+    if syntax_check.get("ok") is not True:
+        raise m.ControllerError(
+            "javascript-syntax-check-failed",
+            "Patched build 9771 local conversation bundle failed JavaScript syntax validation.",
+            details=syntax_check,
+        )
+    return [{
+        "name": "task005-native-terminal-controls-9771",
+        "target": local_thread_rel,
+        "beforeSha256": hashlib.sha256(original).hexdigest(),
+        "afterSha256": hashlib.sha256(updated).hexdigest(),
+        "beforeSize": len(original),
+        "afterSize": len(updated),
+        "alreadyApplied": all(step["alreadyApplied"] for step in substeps),
+        "substeps": substeps,
+        "syntaxCheck": syntax_check,
+        "action": m.TERMINATE_BG_ACTION,
+        "method": m.TERMINATE_BG_NATIVE_METHOD,
+        "content": updated,
+    }]
+
+
 def apply_task005_ui_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> list[dict[str, Any]]:
     local_thread_rel = find_text_entry(
         asar_path,
         header,
         data_offset,
         step_name="local-conversation-thread-path",
+        include_all=("backgroundTerminals.defaultLabel", "function hb(e)"),
         path_contains=("local-conversation-thread",),
         path_prefix="webview/assets/",
     )
     original = m.read_asar_file(asar_path, header, data_offset, local_thread_rel)
     text = original.decode("utf-8")
+    if "function Bb(e){let t=(0,Vb.c)(19)" in text and "function hb(e){" in text:
+        return apply_task005_ui_patch_9771(
+            asar_path, header, data_offset, local_thread_rel
+        )
     if "function ab(e)" in text and "function ob(e)" in text and "function cb(e)" in text:
         return apply_task005_ui_patch_5813(asar_path, header, data_offset, local_thread_rel)
     if "function Ag(e)" in text and "function Ng(e)" in text and "function hg(e)" in text:
@@ -1963,6 +2150,156 @@ def apply_app_control_bridge_patch(asar_path: Path, header: dict[str, Any], data
         m.APP_CONTROL_MAIN_REL = old
 
 
+def apply_output_tab_command_header_patch_9771(
+    asar_path: Path,
+    header: dict[str, Any],
+    data_offset: int,
+) -> dict[str, Any] | None:
+    try:
+        tab_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="output-tab-path-9771",
+            include_all=("backgroundTerminalTab.noOutput", "aggregatedOutput"),
+            path_contains=("local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+        command_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="command-title-path-9771",
+            include_all=("commandActions.length-1", "(?:bash|cmd"),
+            path_contains=("command-execution-command-",),
+            path_prefix="webview/assets/",
+        )
+        open_rel = find_text_entry(
+            asar_path,
+            header,
+            data_offset,
+            step_name="open-output-tab-path-9771",
+            include_all=("fallbackTitle", "props:{conversationId:"),
+            path_contains=("open-local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        return None
+
+    tab_original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), tab_rel),
+        m.read_asar_file(asar_path, header, data_offset, tab_rel),
+    )
+    tab_text = tab_original.decode("utf-8")
+    tab_before = (
+        "function g(e){let t=(0,b.c)(10),{conversationId:r,renderSlots:i,setTabState:a,terminalId:o}=e,"
+        "s=c(p,r),l;t[0]!==o||t[1]!==s?(l=y(s,o),t[0]=o,t[1]=s,t[2]=l):l=t[2];"
+        "let u=l,d=_(o),f=u?.aggregatedOutput??d?.buffer??``,m;"
+        "if(t[3]!==f||t[4]!==i||t[5]!==a){let e;t[7]!==f||t[8]!==a?"
+        "(e=(0,S.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:f.length>0?(0,S.jsx)(C,{output:f,onRenderedOutputReady:e=>a({readOutput:e})}):"
+        "(0,S.jsx)(`div`,{className:`p-4 font-code text-size-code-sm text-codex-description`,"
+        "children:(0,S.jsx)(n,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,"
+        "defaultMessage:`No output yet`,description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[7]=f,t[8]=a,t[9]=e):e=t[9],m=i({headerRows:[],content:e}),"
+        "t[3]=f,t[4]=i,t[5]=a,t[6]=m}else m=t[6];return m}"
+    )
+    tab_after = (
+        "function g(e){let t=(0,b.c)(10),{conversationId:r,renderSlots:i,setTabState:a,terminalId:o,command:q,output:k}=e,"
+        "s=c(p,r),l;t[0]!==o||t[1]!==s?(l=y(s,o),t[0]=o,t[1]=s,t[2]=l):l=t[2];"
+        "let u=l,d=_(o),f=u?.command?.trim()??q?.trim()??``,"
+        "v=u?.aggregatedOutput??d?.buffer??k??``,y=f.length>0?`${f}\\n${v}`:v,m;"
+        "if(t[3]!==y||t[4]!==i||t[5]!==a){let e;t[7]!==y||t[8]!==a?"
+        "(e=(0,S.jsx)(`div`,{className:`h-full min-h-0 bg-surface`,"
+        "children:y.length>0?(0,S.jsx)(C,{output:y,onRenderedOutputReady:e=>a({readOutput:e})}):"
+        "(0,S.jsx)(`div`,{className:`p-4 font-code text-size-code-sm text-codex-description`,"
+        "children:(0,S.jsx)(n,{id:`codex.localConversation.backgroundTerminalTab.noOutput`,"
+        "defaultMessage:`No output yet`,description:`Placeholder shown in a background terminal output tab before any terminal output is available`})})}),"
+        "t[7]=y,t[8]=a,t[9]=e):e=t[9],m=i({headerRows:[],content:e}),"
+        "t[3]=y,t[4]=i,t[5]=a,t[6]=m}else m=t[6];return m}"
+    )
+    tab_text, tab_step = m.replace_text_variants_in_text(
+        tab_text,
+        tab_rel,
+        [(tab_before, tab_after)],
+        step_name="output-tab-command-line-header-9771",
+    )
+
+    command_original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), command_rel),
+        m.read_asar_file(asar_path, header, data_offset, command_rel),
+    )
+    command_text = command_original.decode("utf-8")
+    title_before = (
+        "function t(e){for(let t=e.commandActions.length-1;t>=0;--t){"
+        "let r=e.commandActions[t]?.command.trim()??``;if(r.length>0&&!n(r))return r}"
+        "let t=e.command.trim();return n(t)?``:t}"
+    )
+    title_after = (
+        "function t(e){let t=e.command.trim();if(t.length>0)return t;"
+        "for(let r=e.commandActions.length-1;r>=0;--r){"
+        "let i=e.commandActions[r]?.command.trim()??``;if(i.length>0)return i}return ``}"
+    )
+    command_text, title_step = m.replace_text_variants_in_text(
+        command_text,
+        command_rel,
+        [(title_before, title_after)],
+        step_name="summary-full-command-title-9771",
+    )
+
+    open_original = PENDING_ASAR_CONTENT.get(
+        (str(asar_path), open_rel),
+        m.read_asar_file(asar_path, header, data_offset, open_rel),
+    )
+    open_text = open_original.decode("utf-8")
+    props_before = "props:{conversationId:o,terminalId:a.id},title:a.command.length>0?a.command:s"
+    props_after = (
+        "props:{conversationId:o,terminalId:a.id,command:a.command,"
+        "output:a.output??a.aggregatedOutput??``},title:a.command.length>0?a.command:s"
+    )
+    open_text, props_step = m.replace_text_variants_in_text(
+        open_text,
+        open_rel,
+        [(props_before, props_after)],
+        step_name="output-tab-command-and-output-props-9771",
+    )
+
+    tab_updated = tab_text.encode("utf-8")
+    command_updated = command_text.encode("utf-8")
+    open_updated = open_text.encode("utf-8")
+    PENDING_ASAR_CONTENT[(str(asar_path), tab_rel)] = tab_updated
+    PENDING_ASAR_CONTENT[(str(asar_path), command_rel)] = command_updated
+    PENDING_ASAR_CONTENT[(str(asar_path), open_rel)] = open_updated
+    syntax_checks = {
+        "tab": m.javascript_syntax_check(tab_rel, tab_text),
+        "command": m.javascript_syntax_check(command_rel, command_text),
+        "open": m.javascript_syntax_check(open_rel, open_text),
+    }
+    if any(check.get("ok") is not True for check in syntax_checks.values()):
+        raise m.ControllerError(
+            "javascript-syntax-check-failed",
+            "Patched build 9771 background terminal bundles failed JavaScript syntax validation.",
+            details=syntax_checks,
+        )
+    return {
+        "name": "output-tab-command-header-9771",
+        "target": tab_rel,
+        "beforeSha256": hashlib.sha256(tab_original).hexdigest(),
+        "afterSha256": hashlib.sha256(tab_updated).hexdigest(),
+        "beforeSize": len(tab_original),
+        "afterSize": len(tab_updated),
+        "alreadyApplied": (
+            tab_step["alreadyApplied"]
+            and title_step["alreadyApplied"]
+            and props_step["alreadyApplied"]
+        ),
+        "substeps": [tab_step, title_step, props_step],
+        "syntaxCheck": syntax_checks,
+        "content": tab_updated,
+        "additionalTargets": [command_rel, open_rel],
+    }
+
+
 def apply_output_tab_command_header_patch_7303(
     asar_path: Path,
     header: dict[str, Any],
@@ -2147,6 +2484,12 @@ def apply_output_tab_command_header_patch_7303(
 
 
 def apply_output_tab_command_header_patch(asar_path: Path, header: dict[str, Any], data_offset: int) -> dict[str, Any]:
+    build_9771 = apply_output_tab_command_header_patch_9771(
+        asar_path, header, data_offset
+    )
+    if build_9771 is not None:
+        return build_9771
+
     build_7303 = apply_output_tab_command_header_patch_7303(
         asar_path, header, data_offset
     )
@@ -2545,6 +2888,124 @@ def scan_task005_ui_bindings(app: Path) -> dict[str, Any]:
     paths = m.app_paths(app)
     header, _header_size, data_offset = m.read_asar_header(paths["asar"])
     try:
+        local_9771 = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="scan-local-thread-path-9771",
+            include_all=(
+                "listBackgroundTerminals(i,null,50)",
+                "backgroundActiveTerminal(i)",
+                "terminateBackgroundTerminal(i,n)",
+            ),
+            path_contains=("local-conversation-thread-",),
+            path_prefix="webview/assets/",
+        )
+        manager_9771 = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="scan-manager-path-9771",
+            include_all=(
+                m.CTRL_B_NATIVE_METHOD,
+                m.LIST_BG_NATIVE_METHOD,
+                m.TERMINATE_BG_NATIVE_METHOD,
+                "get listBackgroundTerminals(){return",
+            ),
+            path_prefix="webview/assets/",
+        )
+        tab_9771 = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="scan-output-tab-path-9771",
+            include_all=(
+                "f=u?.command?.trim()??q?.trim()??``",
+                "y=f.length>0?`${f}\\n${v}`:v",
+            ),
+            path_contains=("local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+        open_9771 = find_text_entry(
+            paths["asar"],
+            header,
+            data_offset,
+            step_name="scan-open-output-tab-path-9771",
+            include_all=(
+                "props:{conversationId:o,terminalId:a.id,command:a.command",
+                "output:a.output??a.aggregatedOutput??``",
+            ),
+            path_contains=("open-local-conversation-background-terminal-tab-",),
+            path_prefix="webview/assets/",
+        )
+    except m.ControllerError:
+        pass
+    else:
+        local_text = m.read_asar_file(
+            paths["asar"], header, data_offset, local_9771
+        ).decode("utf-8", "replace")
+        manager_text = m.read_asar_file(
+            paths["asar"], header, data_offset, manager_9771
+        ).decode("utf-8", "replace")
+        tab_text = m.read_asar_file(
+            paths["asar"], header, data_offset, tab_9771
+        ).decode("utf-8", "replace")
+        open_text = m.read_asar_file(
+            paths["asar"], header, data_offset, open_9771
+        ).decode("utf-8", "replace")
+        syntax = {
+            "local": m.javascript_syntax_check(local_9771, local_text),
+            "manager": m.javascript_syntax_check(manager_9771, manager_text),
+            "tab": m.javascript_syntax_check(tab_9771, tab_text),
+            "open": m.javascript_syntax_check(open_9771, open_text),
+        }
+        checks = {
+            "summaryPollsNativeBackgroundTerminalList": "listBackgroundTerminals(i,null,50)" in local_text,
+            "summaryMapsNativeBackgroundTerminalOutput": "aggregatedOutput:String(e.output??``)" in local_text,
+            "summaryUsesCommandTitle": "e.terminal.command.length>0?e.terminal.command" in local_text,
+            "ctrlBCallsNativeBackgroundTransition": "backgroundActiveTerminal(i)" in local_text,
+            "nativeStopUsesProcessId": "terminateBackgroundTerminal(i,n)" in local_text,
+            "summaryStopTargetsSingleNativeTerminal": "defaultMessage:`Stop background terminal`" in local_text,
+            "nativeManagerMethodsPresent": all(
+                marker in manager_text
+                for marker in (
+                    m.CTRL_B_NATIVE_METHOD,
+                    m.LIST_BG_NATIVE_METHOD,
+                    m.TERMINATE_BG_NATIVE_METHOD,
+                )
+            ),
+            "nativeManagerProxyMethodsPresent": all(
+                marker in manager_text
+                for marker in (
+                    "get backgroundActiveTerminal(){return",
+                    "get listBackgroundTerminals(){return",
+                    "get terminateBackgroundTerminal(){return",
+                )
+            ),
+            "outputTabReceivesCommandAndOutputProps": (
+                "command:a.command" in open_text
+                and "output:a.output??a.aggregatedOutput??``" in open_text
+            ),
+            "outputTabPrependsCommandLine": (
+                "f=u?.command?.trim()??q?.trim()??``" in tab_text
+                and "y=f.length>0?`${f}\\n${v}`:v" in tab_text
+            ),
+            "javascriptSyntaxOk": all(
+                check.get("ok") is True for check in syntax.values()
+            ),
+        }
+        return {
+            "ok": all(checks.values()),
+            "checks": checks,
+            "matches": {
+                "target": local_9771,
+                "managerTarget": manager_9771,
+                "outputTarget": tab_9771,
+                "openTarget": open_9771,
+            },
+            "syntaxCheck": syntax,
+        }
+    try:
         local_rel = find_text_entry(paths["asar"], header, data_offset, step_name="scan-local-thread-path", path_contains=("local-conversation-thread",), path_prefix="webview/assets/")
         automations_rel = find_text_entry(paths["asar"], header, data_offset, step_name="scan-output-tab-path", include_all=("backgroundTerminalTab.noOutput", "background-terminal:${n}:${t.id}"), path_prefix="webview/assets/")
         local_text = m.read_asar_file(paths["asar"], header, data_offset, local_rel).decode("utf-8", "replace")
@@ -2890,6 +3351,11 @@ def scan_current_command_ui(app: Path) -> dict[str, Any]:
                     and "h=p.length>0?`${p}\\n${m}`:m" in tab_text
                     and "children:h.length>0" in tab_text
                 )
+                or (
+                    "f=u?.command?.trim()??q?.trim()??``" in tab_text
+                    and "y=f.length>0?`${f}\\n${v}`:v" in tab_text
+                    and "children:y.length>0" in tab_text
+                )
             ),
             "fallbackLabelRemainsAvailable": (
                 "backgroundTerminals.defaultLabel" in thread_text
@@ -3034,9 +3500,16 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
     asar_path = m.app_paths(app)["asar"]
     info_path = m.app_paths(app)["info"]
     header, _header_size, data_offset = m.read_asar_header(asar_path)
+    ctrl_b_steps = apply_ctrl_b_ui_patch(asar_path, header, data_offset)
+    task005_steps = apply_task005_ui_patch(asar_path, header, data_offset)
     output_tab_step = apply_output_tab_command_header_patch(
         asar_path, header, data_offset
     )
+    for step in [*ctrl_b_steps, *task005_steps]:
+        target = step.get("target")
+        content = step.get("content")
+        if isinstance(target, str) and isinstance(content, bytes):
+            PENDING_ASAR_CONTENT[(str(asar_path), target)] = content
     backup_dir = m.REPORT_ROOT / m.CHANGE_ID / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup_suffix = m.current_millis()
@@ -3096,7 +3569,13 @@ def apply_current_native_patch(*, yes: bool, allow_running: bool = False) -> dic
         "changeId": m.CHANGE_ID,
         "generatedAtMs": m.current_millis(),
         "mode": "native-hook-with-command-aware-background-terminal-ui",
-        "steps": [build_step, native_step, output_tab_report],
+        "steps": [
+            build_step,
+            native_step,
+            *[{key: value for key, value in step.items() if key != "content"} for step in ctrl_b_steps],
+            *[{key: value for key, value in step.items() if key != "content"} for step in task005_steps],
+            output_tab_report,
+        ],
         "builtinBackgroundTerminalUi": builtin_ui,
         "commandUiBefore": command_ui_before,
         "commandUiAfter": command_ui_after,
