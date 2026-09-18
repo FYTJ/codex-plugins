@@ -91,6 +91,7 @@ git -C external-sources/openai-codex-0.155.0-alpha.2.6 apply ../../openai-codex-
 
 - `exec_command` 支持 `run_in_background=true`，并立即返回后台会话。
 - 前台 shell 可原位转入后台；达到 `300s` 自动阈值时不会 kill 后重跑。
+- 后台终端单次空 `write_stdin` 持续等待窗口为 `172800000ms`（48 小时），与 `300s` 前台自动转后台阈值相互独立。
 - timeout 路径优先保留并转移原进程。
 - `Ctrl+B` 可将当前可消费的前台 shell 放入后台。
 - App 内置摘要和后台终端页使用 native `thread/backgroundTerminals/*` 接口展示、清理和控制任务。

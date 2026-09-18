@@ -294,6 +294,19 @@ index 875306fdb4..303389f03e 100644
      fn test_thread_metadata(
          model: Option<&str>,
          reasoning_effort: Option<ReasoningEffort>,
+diff --git a/codex-rs/config/defaults.toml b/codex-rs/config/defaults.toml
+index 4983ce1ae3..e8a321c13b 100644
+--- a/codex-rs/config/defaults.toml
++++ b/codex-rs/config/defaults.toml
+@@ -7,7 +7,7 @@ cli_auth_credentials_store = "file"
+ mcp_oauth_credentials_store = "auto"
+ project_doc_max_bytes = 32768
+ project_doc_fallback_filenames = []
+-background_terminal_max_timeout = 300000
++background_terminal_max_timeout = 172800000
+ file_opener = "vscode"
+ hide_agent_reasoning = false
+ chatgpt_base_url = "https://chatgpt.com/backend-api/"
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
 index 7177740fea..0921526d0d 100644
 --- a/codex-rs/core/src/codex_thread.rs
@@ -1360,7 +1373,7 @@ index c2019a70ab..89e21fe1ca 100644
  
      let exited_at = Instant::now();
 diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
-index 8dc8f359d4..0d3fac6f61 100644
+index 8dc8f359d4..4d05d3952b 100644
 --- a/codex-rs/core/src/unified_exec/mod.rs
 +++ b/codex-rs/core/src/unified_exec/mod.rs
 @@ -45,6 +45,7 @@ use crate::session::turn_context::TurnContext;
@@ -1371,10 +1384,12 @@ index 8dc8f359d4..0d3fac6f61 100644
  use codex_core_plugins::PluginMetricsSidecar;
  
  mod async_watcher;
-@@ -76,6 +77,7 @@ pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
+@@ -75,7 +76,8 @@ pub(crate) const WINDOWS_INITIAL_EXEC_YIELD_TIME_FLOOR_MS: u64 = 10_000;
+ // Minimum yield time for an empty `write_stdin`.
  pub(crate) const MIN_EMPTY_YIELD_TIME_MS: u64 = 5_000;
  pub(crate) const MAX_YIELD_TIME_MS: u64 = 30_000;
- pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
+-pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 300_000;
++pub(crate) const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 172_800_000;
 +pub(crate) const AUTO_BACKGROUND_THRESHOLD_MS: u64 = 300_000;
  pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: usize = 10_000;
  pub(crate) const UNIFIED_EXEC_OUTPUT_MAX_BYTES: usize = 1024 * 1024; // 1 MiB
@@ -1431,7 +1446,7 @@ index 8dc8f359d4..0d3fac6f61 100644
      environment_id: String,
      permissions: TerminalPermissions,
 diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
-index a6f488689b..1e8acb66a1 100644
+index a6f488689b..00635bfecc 100644
 --- a/codex-rs/core/src/unified_exec/mod_tests.rs
 +++ b/codex-rs/core/src/unified_exec/mod_tests.rs
 @@ -1,5 +1,6 @@
@@ -1569,7 +1584,7 @@ index a6f488689b..1e8acb66a1 100644
  
      write_stdin(
          &session,
-@@ -395,6 +446,561 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
+@@ -395,6 +446,566 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
      Ok(())
  }
  
@@ -2128,10 +2143,15 @@ index a6f488689b..1e8acb66a1 100644
 +    assert_eq!(AUTO_BACKGROUND_THRESHOLD_MS, 300_000);
 +}
 +
++#[test]
++fn default_background_terminal_wait_is_48_hours() {
++    assert_eq!(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS, 172_800_000);
++}
++
  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
  async fn multi_unified_exec_sessions() -> anyhow::Result<()> {
      skip_if_sandbox!(Ok(()));
-@@ -614,7 +1220,13 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
+@@ -614,7 +1225,13 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
              process_id,
              cwd: cwd.into(),
              initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -2145,7 +2165,7 @@ index a6f488689b..1e8acb66a1 100644
              tty: true,
              environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
              permissions: TerminalPermissions::for_launch(
-@@ -697,7 +1309,13 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
+@@ -697,7 +1314,13 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
              process_id,
              cwd: cwd.into(),
              initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2159,7 +2179,7 @@ index a6f488689b..1e8acb66a1 100644
              tty: true,
              environment_id: codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string(),
              permissions: TerminalPermissions::for_launch(
-@@ -832,6 +1450,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
+@@ -832,6 +1455,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
          process.output_handles(),
          /*pause_state*/ None,
          Instant::now() + Duration::from_millis(2_500),

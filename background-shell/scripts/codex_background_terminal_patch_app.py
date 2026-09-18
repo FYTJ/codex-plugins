@@ -55,6 +55,8 @@ CHANGE_ID = "change-20260916-codex-0155-0-alpha-2-6-build-9647"
 APP_BUNDLE_ID = "com.openai.codex"
 OPENAI_TEAM_ID = "2DC432GLL2"
 AUTO_BACKGROUND_THRESHOLD_SECONDS = 300
+BACKGROUND_TERMINAL_WAIT_SECONDS = 2 * 86_400
+BACKGROUND_TERMINAL_WAIT_MS = BACKGROUND_TERMINAL_WAIT_SECONDS * 1000
 PATCH_FRAMEWORK_MARKER = "codex-background-terminal-native-framework"
 CTRL_B_ACTION = "background-active-terminal"
 CTRL_B_NATIVE_METHOD = "thread/backgroundTerminals/backgroundActive"
@@ -683,6 +685,11 @@ def self_test() -> dict[str, Any]:
         EXPECTED_CODEX_VERSION == "codex-cli 0.155.0-alpha.2.6",
     )
     check("auto threshold is 300 seconds", AUTO_BACKGROUND_THRESHOLD_SECONDS == 300)
+    check(
+        "background terminal wait is 48 hours",
+        BACKGROUND_TERMINAL_WAIT_SECONDS == 172_800
+        and BACKGROUND_TERMINAL_WAIT_MS == 172_800_000,
+    )
     check("busy wakeup scenario is registered", "busy-wakeup-30s" in SCENARIO_TESTS)
     check("idle wakeup scenario is registered", "idle-wakeup-2min" in SCENARIO_TESTS)
     check("background wakeup native marker is required", b"background_wakeup" in NATIVE_PATCH_MARKERS)
@@ -1454,7 +1461,7 @@ def analyze_native() -> dict[str, Any]:
                 },
                 "processStore": "UnifiedExecProcessManager stores live processes before initial yield, but lists only entries that explicitly transitioned to background state.",
                 "autoBackgroundThresholdMs": AUTO_BACKGROUND_THRESHOLD_SECONDS * 1000,
-                "defaultMaxBackgroundTerminalTimeoutMs": 300_000,
+                "defaultMaxBackgroundTerminalTimeoutMs": BACKGROUND_TERMINAL_WAIT_MS,
                 "maxYieldTimeMs": 30_000,
                 "minEmptyYieldTimeMs": 5_000,
                 "sources": ["explicit_tool", "foreground_adopt", "auto_threshold", "timeout", "user_shortcut"],
@@ -1965,6 +1972,7 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         "sessionInject": CODEX_RS / "core/src/session/inject.rs",
         "sessionEvents": CODEX_RS / "core/src/session/mod.rs",
         "asyncWatcher": CODEX_RS / "core/src/unified_exec/async_watcher.rs",
+        "unifiedExecMod": CODEX_RS / "core/src/unified_exec/mod.rs",
         "unifiedExecTests": CODEX_RS / "core/src/unified_exec/mod_tests.rs",
     }
     texts: dict[str, str] = {}
@@ -2021,7 +2029,12 @@ def scan_task006_wakeup_bindings() -> dict[str, Any]:
         and "BackgroundWakeupPhase::Delivered" in session_inject,
         "guidedMessageStuckGuardPresent": "guided-message-stuck" in session_inject
         and "update_background_wakeup_if_still_pending_delivery" in session_inject,
-        "deferredIdleTimeoutIsOneDay": "Duration::from_secs(86_400)" in session_inject,
+        "backgroundTerminalWaitIs48Hours": (
+            "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS: u64 = 172_800_000" in texts["unifiedExecMod"]
+        ),
+        "deferredIdleTimeoutSeconds": 86_400
+        if "Duration::from_secs(86_400)" in session_inject
+        else None,
         "wakeupConsumptionRequiresTaskId": "text.contains(&wakeup.notification_id)" in session_inject
         and "text.contains(&wakeup.process_id)" not in session_inject
         and "text.contains(&wakeup.command)" not in session_inject,
